@@ -40,6 +40,8 @@ export interface BacktestOptions {
   swingLookbackDays?: number;
   pivotWindow?: number;
   swingMinDistancePct?: number;
+  tradeInterval?: string;
+  regimeInterval?: string;
 }
 
 export interface BacktestTrade {
@@ -85,6 +87,8 @@ export interface BacktestSegment {
 }
 
 export interface BacktestResult {
+  tradeInterval: string | null;
+  regimeInterval: string | null;
   firstCandleTime: number | null;
   lastCandleTime: number | null;
   strategyCandles: number;
@@ -162,6 +166,8 @@ export function runBacktest(
   const outOfSampleTrades = trades.filter((trade) => trade.signalTime >= splitTime);
 
   return {
+    tradeInterval: options.tradeInterval ?? null,
+    regimeInterval: options.regimeInterval ?? null,
     firstCandleTime: candles[0]?.openTime ?? null,
     lastCandleTime: last?.closeTime ?? null,
     strategyCandles: candles.length,

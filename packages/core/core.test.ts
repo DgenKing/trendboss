@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { config, validateConfig } from '../../config';
+import { createIntervalResultCache, getCachedIntervalResult } from '../monitor/api';
 import { runBacktest } from './backtest';
 import { ReversionSignalTracker, detectTouch } from './detect';
 import { calculateIndicatorSeries, latestIndicatorAt, type IndicatorSnapshot } from './indicators';
@@ -15,6 +17,75 @@ import type { Candle, Levels, MarketEvent } from './types';
 const DAY = 24 * 60 * 60 * 1000;
 const FIFTEEN = 15 * 60 * 1000;
 const now = Date.UTC(2026, 5, 3, 12);
+
+function validConfigForValidation() {
+  return {
+    coins: ['ETH'],
+    tradeInterval: '15m',
+    tradeIntervals: ['15m', '1h', '2h', '4h'],
+    regimeForTrade: {
+      '15m': '1h',
+      '1h': '4h',
+      '2h': '4h',
+      '4h': '1d',
+    },
+    candleInterval: '15m',
+    regimeInterval: '1h',
+    chartIntervals: ['15m', '1h', '2h', '4h', '1d'],
+    backfillTarget: {
+      '15m': 5000,
+      '1h': 5000,
+      '2h': 5000,
+      '4h': 5000,
+      '1d': 5000,
+    },
+  };
+}
+
+describe('trade interval config', () => {
+  test('maps each trade interval to the intended regime interval', () => {
+    expect(config.regimeForTrade).toEqual({
+      '15m': '1h',
+      '1h': '4h',
+      '2h': '4h',
+      '4h': '1d',
+    });
+    expect(config.candleInterval).toBe(config.tradeInterval);
+    expect(config.regimeInterval).toBe(config.regimeForTrade[config.tradeInterval]);
+  });
+
+  test('rejects an unsupported trade interval', () => {
+    expect(() => validateConfig({
+      ...validConfigForValidation(),
+      tradeInterval: '30m',
+      candleInterval: '30m',
+      regimeInterval: undefined,
+    })).toThrow('Trade interval 30m');
+  });
+
+  test('keeps cached results isolated by interval', () => {
+    const cache = createIntervalResultCache<number>();
+    let builds = 0;
+
+    const first15m = getCachedIntervalResult(cache, '15m', 60_000, () => {
+      builds += 1;
+      return builds;
+    });
+    const second15m = getCachedIntervalResult(cache, '15m', 60_000, () => {
+      builds += 1;
+      return builds;
+    });
+    const first4h = getCachedIntervalResult(cache, '4h', 60_000, () => {
+      builds += 1;
+      return builds;
+    });
+
+    expect(first15m).toBe(1);
+    expect(second15m).toBe(1);
+    expect(first4h).toBe(2);
+    expect(builds).toBe(2);
+  });
+});
 
 describe('computeLevels', () => {
   test('computes range and nearest swing pivots using completed UTC daily candles', () => {

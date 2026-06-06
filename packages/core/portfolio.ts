@@ -21,11 +21,15 @@ export interface PortfolioSimulationOptions {
   maxTotalMargin: number;
   feePerSide: number;
   slippagePerSide: number;
+  tradeInterval?: string;
+  regimeInterval?: string;
 }
 
 export interface PortfolioBacktestOptions extends PortfolioSimulationOptions {
   backtest: Omit<BacktestOptions, 'coin'>;
   regime?: RegimeOptions;
+  tradeInterval?: string;
+  regimeInterval?: string;
 }
 
 export interface PortfolioCandidateTrade extends BacktestTrade {
@@ -100,6 +104,8 @@ export interface PortfolioAttribution {
 }
 
 export interface PortfolioResult {
+  tradeInterval: string | null;
+  regimeInterval: string | null;
   commonStartTime: number | null;
   commonEndTime: number | null;
   summary: {
@@ -136,7 +142,7 @@ export function runPortfolioBacktest(
   const commonStartTime = portfolioCommonStart(symbols, options.regime);
   const commonEndTime = portfolioCommonEnd(symbols);
   if (commonStartTime === null || commonEndTime === null || commonStartTime > commonEndTime) {
-    return emptyResult(options.startingCapital);
+    return emptyResult(options.startingCapital, options.tradeInterval ?? null, options.regimeInterval ?? null);
   }
 
   const candidates = symbols.flatMap((symbol) => {
@@ -146,7 +152,12 @@ export function runPortfolioBacktest(
     const result = runBacktest(
       strategyCandles,
       symbol.dailyCandles,
-      { ...options.backtest, coin: symbol.coin },
+      {
+        ...options.backtest,
+        coin: symbol.coin,
+        tradeInterval: options.tradeInterval,
+        regimeInterval: options.regimeInterval,
+      },
       symbol.regimeCandles,
     );
     return result.trades.map((trade) => ({ ...trade, coin: symbol.coin }));
@@ -368,6 +379,8 @@ export function simulatePortfolioTrades(
   const losses = Math.abs(sum(closedTrades.filter((trade) => trade.pnl <= 0).map((trade) => trade.pnl)));
 
   return {
+    tradeInterval: options.tradeInterval ?? null,
+    regimeInterval: options.regimeInterval ?? null,
     commonStartTime,
     commonEndTime,
     summary: {
@@ -566,8 +579,14 @@ function groupBy<T, K>(values: T[], key: (value: T) => K): Map<K, T[]> {
   return groups;
 }
 
-function emptyResult(startingCapital: number): PortfolioResult {
+function emptyResult(
+  startingCapital: number,
+  tradeInterval: string | null = null,
+  regimeInterval: string | null = null,
+): PortfolioResult {
   return {
+    tradeInterval,
+    regimeInterval,
     commonStartTime: null,
     commonEndTime: null,
     summary: {

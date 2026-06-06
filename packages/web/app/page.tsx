@@ -5,17 +5,18 @@ import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import {
   displayCoin,
-  getCandles,
+  getBacktest,
   getCoins,
   getDashboardData,
   getIntervals,
   getPortfolio,
+  getTradeIntervals,
   type Candle,
   type Levels,
   type MarketEvent,
   type Status,
 } from '../lib/api';
-import { runBacktest, type BacktestResult, type BacktestTrade } from '../../core/backtest';
+import type { BacktestResult, BacktestTrade } from '../../core/backtest';
 import type { PortfolioResult } from '../../core/portfolio';
 
 const Chart = dynamic(() => import('../components/Chart'), { ssr: false });
@@ -58,35 +59,19 @@ type PortfolioLoadState = {
 
 const emptyPortfolio: PortfolioLoadState = { result: null, loading: false, error: null };
 
-const STRATEGY_INTERVAL = '15m';
-const BACKTEST_HISTORY_LIMIT = 5000;
 const BACKTEST_REFRESH_MS = 60_000;
-const BACKTEST_OPTIONS = {
-  detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
-  strategy: {
-    detection: { touchTolerance: 0.0008, touchCooldownMinutes: 60 },
-    rangeSignal: { confirmWithinCandles: 3, stopBuffer: 0.0005 },
-    range: { enabled: true, maxAdx: 12, targetR: 2, minScore: 80 },
-    trend: {
-      breakoutLookback: 40,
-      atrPeriod: 14,
-      atrStopMultiple: 2.5,
-      targetR: 2.5,
-      rsiPeriod: 14,
-      rsiLongMin: 60,
-      rsiShortMax: 40,
-    },
-  },
-  regime: {
-    adxPeriod: 14,
-    adxThreshold: 22,
-    fastEmaPeriod: 20,
-    slowEmaPeriod: 50,
-    slowEmaSlopeLookback: 10,
-  },
-  feePerSide: 0.00035,
-  slippagePerSide: 0.00015,
-  swingMinDistancePct: 0.015,
+const DEFAULT_TRADE_INTERVALS = ['15m', '1h', '2h', '4h'];
+const REGIME_BY_TRADE: Record<string, string> = {
+  '15m': '1h',
+  '1h': '4h',
+  '2h': '4h',
+  '4h': '1d',
+};
+const HISTORY_DEPTH_BY_TRADE: Record<string, string> = {
+  '15m': '~52 days',
+  '1h': '~208 days',
+  '2h': '~417 days',
+  '4h': '~833 days',
 };
 
 export default function Page() {
@@ -95,6 +80,8 @@ export default function Page() {
   const [coin, setCoin] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>('portfolio');
   const [activeInterval, setActiveInterval] = useState('15m');
+  const [tradeIntervals, setTradeIntervals] = useState<string[]>(DEFAULT_TRADE_INTERVALS);
+  const [activeTradeInterval, setActiveTradeInterval] = useState('15m');
   const [data, setData] = useState<DashboardData>(emptyData);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>('light');
@@ -103,13 +90,13 @@ export default function Page() {
 
   // Load the saved theme once, then keep <html data-theme> and localStorage in sync.
   useEffect(() => {
-    const saved = localStorage.getItem('rb-theme');
+    const saved = localStorage.getItem('tb-theme');
     if (saved === 'light' || saved === 'dusk' || saved === 'dark') setTheme(saved);
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem('rb-theme', theme);
+    localStorage.setItem('tb-theme', theme);
   }, [theme]);
 
   // Load the coin list, retrying until the monitor API is reachable.
@@ -138,6 +125,26 @@ export default function Page() {
     return () => {
       alive = false;
       if (timer) clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadTradeIntervals() {
+      try {
+        const list = await getTradeIntervals();
+        if (!alive || list.length === 0) return;
+        setTradeIntervals(list);
+        setActiveTradeInterval((current) => list.includes(current) ? current : '15m');
+      } catch {
+        if (alive) setTradeIntervals(DEFAULT_TRADE_INTERVALS);
+      }
+    }
+
+    void loadTradeIntervals();
+    return () => {
+      alive = false;
     };
   }, []);
 
@@ -199,18 +206,11 @@ export default function Page() {
       setBacktest((current) => ({ ...current, loading: true, error: null }));
 
       try {
-        const [strategyCandles, dailyCandles, regimeCandles] = await Promise.all([
-          getCandles(coin!, STRATEGY_INTERVAL, BACKTEST_HISTORY_LIMIT),
-          getCandles(coin!, '1d', BACKTEST_HISTORY_LIMIT),
-          getCandles(coin!, '1h', BACKTEST_HISTORY_LIMIT),
-        ]);
+        const result = await getBacktest(coin!, activeTradeInterval);
         if (!alive) return;
 
         setBacktest({
-          result: runBacktest(strategyCandles, dailyCandles, {
-            coin: coin!,
-            ...BACKTEST_OPTIONS,
-          }, regimeCandles),
+          result,
           loading: false,
           error: null,
         });
@@ -230,14 +230,14 @@ export default function Page() {
       alive = false;
       clearInterval(interval);
     };
-  }, [coin]);
+  }, [coin, activeTradeInterval]);
 
   useEffect(() => {
     let alive = true;
     async function loadPortfolio() {
       setPortfolio((current) => ({ ...current, loading: true, error: null }));
       try {
-        const result = await getPortfolio();
+        const result = await getPortfolio(activeTradeInterval);
         if (alive) setPortfolio({ result, loading: false, error: null });
       } catch (caught) {
         if (alive) setPortfolio({
@@ -253,7 +253,7 @@ export default function Page() {
       alive = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [activeTradeInterval]);
 
   const latestClose = data.candles.at(-1)?.close ?? null;
   const price = data.status?.currentPrice ?? latestClose;
@@ -264,7 +264,7 @@ export default function Page() {
       <header className="border-b border-line bg-surface">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4 px-5 py-4">
           <div className="flex items-center gap-3">
-            <img src="/rangeboss-logo.png" alt="RangeBoss" className="h-9 w-auto" />
+            <img src="/trendboss-logo.png" alt="TrendBoss" className="h-9 w-auto" />
           </div>
 
           <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -298,7 +298,21 @@ export default function Page() {
 
       {activeView === 'portfolio' ? (
         <div className="mx-auto max-w-[1600px] px-5 py-5">
-          <PortfolioView result={portfolio.result} loading={portfolio.loading} error={portfolio.error} theme={theme} />
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <TradeTimeframeSelector
+              intervals={tradeIntervals}
+              active={activeTradeInterval}
+              onSelect={setActiveTradeInterval}
+            />
+            <TradeTimeframeLabel interval={activeTradeInterval} />
+          </div>
+          <PortfolioView
+            result={portfolio.result}
+            loading={portfolio.loading}
+            error={portfolio.error}
+            theme={theme}
+            tradeInterval={activeTradeInterval}
+          />
         </div>
       ) : (
       <div className="mx-auto grid max-w-[1600px] gap-4 px-5 py-5 xl:grid-cols-[minmax(0,1fr)_390px]">
@@ -320,7 +334,13 @@ export default function Page() {
               theme={theme}
             />
           </div>
-          <BacktestPanel coin={coin} state={backtest} />
+          <BacktestPanel
+            coin={coin}
+            state={backtest}
+            tradeIntervals={tradeIntervals}
+            activeTradeInterval={activeTradeInterval}
+            onTradeIntervalSelect={setActiveTradeInterval}
+          />
         </section>
 
         <aside className="min-w-0 rounded border border-line bg-surface">
@@ -428,6 +448,46 @@ function TimeframeSelector({
   );
 }
 
+function TradeTimeframeSelector({
+  intervals,
+  active,
+  onSelect,
+}: {
+  intervals: string[];
+  active: string;
+  onSelect: (interval: string) => void;
+}) {
+  return (
+    <div className="inline-flex rounded border border-line bg-surface2 p-1">
+      {intervals.map((interval) => {
+        const isActive = interval === active;
+        return (
+          <button
+            key={interval}
+            type="button"
+            onClick={() => onSelect(interval)}
+            className={[
+              'min-w-12 rounded px-3 py-1.5 text-sm font-semibold transition-colors',
+              isActive ? 'bg-accent text-accentfg' : 'text-ink hover:bg-bg',
+            ].join(' ')}
+          >
+            {interval}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function TradeTimeframeLabel({ interval }: { interval: string }) {
+  return (
+    <div className="rounded border border-line bg-surface2 px-3 py-2 text-sm">
+      <span className="text-xs uppercase text-muted">Trade timeframe</span>
+      <span className="ml-2 font-semibold">{interval} · {HISTORY_DEPTH_BY_TRADE[interval] ?? 'available history'}</span>
+    </div>
+  );
+}
+
 function ThemeSelector({ theme, onSelect }: { theme: Theme; onSelect: (theme: Theme) => void }) {
   const options: Array<[Theme, string]> = [['light', 'Light'], ['dusk', 'Dusk'], ['dark', 'Dark']];
 
@@ -500,11 +560,25 @@ function LevelStrip({ levels }: { levels: Levels | null }) {
   );
 }
 
-function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLoadState }) {
+function BacktestPanel({
+  coin,
+  state,
+  tradeIntervals,
+  activeTradeInterval,
+  onTradeIntervalSelect,
+}: {
+  coin: string | null;
+  state: BacktestLoadState;
+  tradeIntervals: string[];
+  activeTradeInterval: string;
+  onTradeIntervalSelect: (interval: string) => void;
+}) {
   const result = state.result;
   const summary = result?.summary;
   const outOfSample = result?.segments.outOfSample.summary;
   const trades = result?.trades.slice(-5).reverse() ?? [];
+  const tradeInterval = result?.tradeInterval ?? activeTradeInterval;
+  const regimeInterval = result?.regimeInterval ?? REGIME_BY_TRADE[tradeInterval] ?? '1h';
 
   return (
     <section className="mt-4 rounded border border-line bg-surface">
@@ -513,14 +587,22 @@ function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLo
           <h2 className="text-base font-semibold">Strategy Backtest</h2>
           <p className="mt-1 text-sm text-muted">
             {coin
-              ? `${displayCoin(coin)} ${STRATEGY_INTERVAL} rules from first available candle`
+              ? `${displayCoin(coin)} ${tradeInterval} rules · regime ${regimeInterval} · historical simulation only`
               : 'Select a market to run the strategy history'}
           </p>
         </div>
-        <div className="rounded border border-line bg-surface2 px-3 py-2 text-right text-sm">
-          <div className="text-xs uppercase text-muted">Window</div>
-          <div className="font-semibold">
-            {result?.firstCandleTime ? `${formatShortDate(result.firstCandleTime)} - ${formatShortDate(result.lastCandleTime)}` : 'Waiting'}
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <TradeTimeframeSelector
+            intervals={tradeIntervals}
+            active={activeTradeInterval}
+            onSelect={onTradeIntervalSelect}
+          />
+          <div className="rounded border border-line bg-surface2 px-3 py-2 text-right text-sm">
+            <div className="text-xs uppercase text-muted">Window</div>
+            <div className="font-semibold">
+              {result?.firstCandleTime ? `${formatShortDate(result.firstCandleTime)} - ${formatShortDate(result.lastCandleTime)}` : 'Waiting'}
+            </div>
+            <div className="text-xs text-muted">{tradeInterval} · {HISTORY_DEPTH_BY_TRADE[tradeInterval] ?? 'available history'}</div>
           </div>
         </div>
       </div>
@@ -528,8 +610,8 @@ function BacktestPanel({ coin, state }: { coin: string | null; state: BacktestLo
       <div className="grid gap-3 p-4 lg:grid-cols-[1fr_1.4fr]">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-2">
           <BacktestMetric label="Regime" value={result?.currentRegime?.ready ? result.currentRegime.regime : 'WARMUP'} />
-          <BacktestMetric label="ADX (1h)" value={result?.currentRegime?.ready ? result.currentRegime.adx.toFixed(1) : '--'} />
-          <BacktestMetric label="RSI (1h)" value={result?.currentRegime?.ready ? result.currentRegime.rsi.toFixed(1) : '--'} />
+          <BacktestMetric label={`ADX (${regimeInterval})`} value={result?.currentRegime?.ready ? result.currentRegime.adx.toFixed(1) : '--'} />
+          <BacktestMetric label={`RSI (${regimeInterval})`} value={result?.currentRegime?.ready ? result.currentRegime.rsi.toFixed(1) : '--'} />
           <BacktestMetric label="Signals" value={summary ? String(summary.totalTrades) : '--'} />
           <BacktestMetric label="Win Rate" value={summary ? formatPercent(summary.winRate) : '--'} tone={summary && summary.winRate >= 0.5 ? 'positive' : undefined} />
           <BacktestMetric label="Net R" value={summary ? formatR(summary.netR) : '--'} tone={summary && summary.netR >= 0 ? 'positive' : 'negative'} />

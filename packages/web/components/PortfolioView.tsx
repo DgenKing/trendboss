@@ -16,11 +16,13 @@ export default function PortfolioView({
   loading,
   error,
   theme,
+  tradeInterval,
 }: {
   result: PortfolioResult | null;
   loading: boolean;
   error: string | null;
   theme: string;
+  tradeInterval: string;
 }) {
   if (error) {
     return <div className="border border-line bg-surface px-5 py-8 text-negative">{error}</div>;
@@ -30,7 +32,12 @@ export default function PortfolioView({
   }
 
   const latest = result.timeline.at(-1);
-  const decisions = latestDecisions(result.decisions, result.activePositions, result.commonEndTime);
+  const decisions = latestDecisions(
+    result.decisions,
+    result.activePositions,
+    result.commonEndTime,
+    result.tradeInterval ?? tradeInterval,
+  );
 
   return (
     <section className="border border-line bg-surface">
@@ -45,6 +52,7 @@ export default function PortfolioView({
           </div>
           <div className="mt-1 text-xs text-muted">
             Shared capital from {formatDate(result.commonStartTime)} to {formatDate(result.commonEndTime)}
+            {' '}· {(result.tradeInterval ?? tradeInterval)} · {historyDepth(result.tradeInterval ?? tradeInterval)} · historical simulation only
           </div>
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
@@ -178,13 +186,32 @@ function latestDecisions(
   decisions: PortfolioDecision[],
   active: PortfolioPosition[],
   commonEndTime: number | null,
+  tradeInterval: string,
 ) {
   const activeCoins = new Set(active.map((position) => position.coin));
-  const recentCutoff = (commonEndTime ?? 0) - 15 * 60 * 1000;
+  const recentCutoff = (commonEndTime ?? 0) - intervalToMs(tradeInterval);
   return [...decisions]
     .filter((decision) => !activeCoins.has(decision.coin) && decision.time >= recentCutoff)
     .sort((a, b) => b.time - a.time || b.score - a.score)
     .slice(0, 8);
+}
+
+function historyDepth(interval: string) {
+  return ({
+    '15m': '~52 days',
+    '1h': '~208 days',
+    '2h': '~417 days',
+    '4h': '~833 days',
+  } as Record<string, string>)[interval] ?? 'available history';
+}
+
+function intervalToMs(interval: string) {
+  const match = /^(\d+)(m|h|d)$/.exec(interval);
+  if (!match) return 15 * 60 * 1000;
+  const value = Number(match[1]);
+  if (match[2] === 'm') return value * 60 * 1000;
+  if (match[2] === 'h') return value * 60 * 60 * 1000;
+  return value * 24 * 60 * 60 * 1000;
 }
 
 function formatUsd(value: number) {

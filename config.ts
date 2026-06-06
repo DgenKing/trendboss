@@ -12,14 +12,29 @@ const coins = (process.env.COINS ?? DEFAULT_COINS.join(','))
   .map(normalizeCoin)
   .filter(Boolean);
 
+export const tradeIntervals = ['15m', '1h', '2h', '4h'] as const;
+export type TradeInterval = typeof tradeIntervals[number];
+
+const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
+const regimeForTrade = {
+  '15m': '1h',
+  '1h': '4h',
+  '2h': '4h',
+  '4h': '1d',
+} as const satisfies Record<TradeInterval, string>;
+
 export const config = {
   coins,
-  candleInterval: '15m',
-  regimeInterval: '1h',
-  chartIntervals: ['15m', '1h', '4h', '1d'] as const,
+  tradeInterval,
+  tradeIntervals,
+  regimeForTrade,
+  candleInterval: tradeInterval,
+  regimeInterval: regimeForTrade[tradeInterval],
+  chartIntervals: ['15m', '1h', '2h', '4h', '1d'] as const,
   backfillTarget: {
     '15m': 5000,
     '1h': 5000,
+    '2h': 5000,
     '4h': 5000,
     '1d': 5000,
   } as Record<string, number>,
@@ -80,20 +95,49 @@ export const config = {
 } as const;
 
 export function assertValidConfig() {
-  if (config.coins.length === 0) {
+  validateConfig(config);
+}
+
+export function validateConfig(candidate: {
+  coins: readonly string[];
+  tradeInterval: string;
+  tradeIntervals: readonly string[];
+  regimeForTrade: Record<string, string | undefined>;
+  candleInterval: string;
+  regimeInterval: string | undefined;
+  chartIntervals: readonly string[];
+  backfillTarget: Record<string, number | undefined>;
+}) {
+  if (candidate.coins.length === 0) {
     throw new Error('No coins configured. Set the COINS env var.');
   }
 
-  if (!config.chartIntervals.includes(config.candleInterval)) {
-    throw new Error(`Detection interval ${config.candleInterval} must be listed in chartIntervals.`);
-  }
-  if (!config.chartIntervals.includes(config.regimeInterval)) {
-    throw new Error(`Regime interval ${config.regimeInterval} must be listed in chartIntervals.`);
+  if (!candidate.tradeIntervals.includes(candidate.tradeInterval)) {
+    throw new Error(`Trade interval ${candidate.tradeInterval} must be one of: ${candidate.tradeIntervals.join(', ')}.`);
   }
 
-  for (const interval of config.chartIntervals) {
-    const target = config.backfillTarget[interval];
-    if (!Number.isInteger(target) || target < 1 || target > 5000) {
+  const mappedRegimeInterval = candidate.regimeForTrade[candidate.tradeInterval];
+  if (!mappedRegimeInterval) {
+    throw new Error(`Trade interval ${candidate.tradeInterval} is missing a regime interval mapping.`);
+  }
+
+  if (candidate.candleInterval !== candidate.tradeInterval) {
+    throw new Error(`Detection interval ${candidate.candleInterval} must match tradeInterval ${candidate.tradeInterval}.`);
+  }
+  if (candidate.regimeInterval !== mappedRegimeInterval) {
+    throw new Error(`Regime interval ${candidate.regimeInterval} must match mapping ${candidate.tradeInterval} -> ${mappedRegimeInterval}.`);
+  }
+
+  if (!candidate.chartIntervals.includes(candidate.tradeInterval)) {
+    throw new Error(`Trade interval ${candidate.tradeInterval} must be listed in chartIntervals.`);
+  }
+  if (!candidate.chartIntervals.includes(mappedRegimeInterval)) {
+    throw new Error(`Regime interval ${mappedRegimeInterval} must be listed in chartIntervals.`);
+  }
+
+  for (const interval of candidate.chartIntervals) {
+    const target = candidate.backfillTarget[interval];
+    if (target === undefined || !Number.isInteger(target) || target < 1 || target > 5000) {
       throw new Error(`Invalid backfill target for ${interval}: ${target}`);
     }
   }

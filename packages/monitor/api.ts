@@ -1,4 +1,5 @@
-import { config } from '../../config';
+import { config, type TradeInterval } from '../../config';
+import { runBacktest, type BacktestResult } from '../core/backtest';
 import { runPortfolioBacktest, type PortfolioResult } from '../core/portfolio';
 import type { Store } from './store';
 
@@ -9,7 +10,8 @@ export type MonitorStatus = {
 };
 
 export function startApi(store: Store, status: MonitorStatus) {
-  let portfolioCache: { computedAt: number; result: PortfolioResult } | null = null;
+  const portfolioCache = createIntervalResultCache<PortfolioResult>();
+  const backtestCache = new Map<string, IntervalCacheEntry<BacktestResult>>();
   const resolveCoin = (url: URL): string => {
     const requested = url.searchParams.get('coin');
     if (requested) {
@@ -49,14 +51,33 @@ export function startApi(store: Store, status: MonitorStatus) {
         return json(config.chartIntervals);
       }
 
+      if (url.pathname === '/api/trade-intervals') {
+        return json(config.tradeIntervals);
+      }
+
       if (url.pathname === '/api/portfolio') {
-        if (!portfolioCache || Date.now() - portfolioCache.computedAt >= config.portfolio.cacheMs) {
-          portfolioCache = {
-            computedAt: Date.now(),
-            result: buildPortfolio(store, status.coins),
-          };
-        }
-        return json(compactPortfolio(portfolioCache.result));
+        const interval = resolveTradeInterval(url);
+        if (!interval) return invalidInterval();
+        const result = getCachedIntervalResult(
+          portfolioCache,
+          interval,
+          config.portfolio.cacheMs,
+          () => buildPortfolio(store, status.coins, interval),
+        );
+        return json(compactPortfolio(result));
+      }
+
+      if (url.pathname === '/api/backtest') {
+        const interval = resolveTradeInterval(url);
+        if (!interval) return invalidInterval();
+        const coin = resolveCoin(url);
+        const result = getCachedIntervalResult(
+          backtestCache,
+          `${coin}:${interval}`,
+          config.portfolio.cacheMs,
+          () => buildBacktest(store, coin, interval),
+        );
+        return json(result);
       }
 
       if (url.pathname === '/api/levels') {
@@ -93,6 +114,28 @@ export function startApi(store: Store, status: MonitorStatus) {
   return server;
 }
 
+export type IntervalCacheEntry<T> = { computedAt: number; result: T };
+
+export function createIntervalResultCache<T>() {
+  return new Map<string, IntervalCacheEntry<T>>();
+}
+
+export function getCachedIntervalResult<T>(
+  cache: Map<string, IntervalCacheEntry<T>>,
+  interval: string,
+  cacheMs: number,
+  build: () => T,
+): T {
+  const cached = cache.get(interval);
+  if (cached && Date.now() - cached.computedAt < cacheMs) {
+    return cached.result;
+  }
+
+  const result = build();
+  cache.set(interval, { computedAt: Date.now(), result });
+  return result;
+}
+
 function json(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -103,6 +146,12 @@ function json(payload: unknown, status = 200) {
       'Access-Control-Allow-Headers': 'Content-Type',
     },
   });
+}
+
+function invalidInterval() {
+  return json({
+    error: `Invalid interval. Use one of: ${config.tradeIntervals.join(', ')}`,
+  }, 400);
 }
 
 function html(body: string, status = 200) {
@@ -169,7 +218,9 @@ function apiIndex(status: MonitorStatus) {
       <ul>
         <li><a href="/api/coins"><code>/api/coins</code></a></li>
         <li><a href="/api/intervals"><code>/api/intervals</code></a></li>
+        <li><a href="/api/trade-intervals"><code>/api/trade-intervals</code></a></li>
         <li><a href="/api/portfolio"><code>/api/portfolio</code></a></li>
+        <li><a href="/api/backtest?coin=${encodeURIComponent(status.coins[0] ?? '')}&interval=15m"><code>/api/backtest?coin=…&interval=15m</code></a></li>
         <li><a href="/api/status?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/status?coin=…</code></a></li>
         <li><a href="/api/levels?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/levels?coin=…</code></a></li>
         <li><a href="/api/candles?coin=${encodeURIComponent(status.coins[0] ?? '')}&interval=15m&limit=1500"><code>/api/candles?coin=…&interval=15m&limit=1500</code></a></li>
@@ -180,11 +231,12 @@ function apiIndex(status: MonitorStatus) {
 </html>`;
 }
 
-function buildPortfolio(store: Store, coins: string[]) {
+function buildPortfolio(store: Store, coins: string[], tradeInterval: TradeInterval) {
+  const regimeInterval = config.regimeForTrade[tradeInterval];
   const symbols = coins.map((coin) => ({
     coin,
-    strategyCandles: store.getRecentCandles(coin, config.candleInterval, config.backfillTarget[config.candleInterval]),
-    regimeCandles: store.getRecentCandles(coin, config.regimeInterval, config.backfillTarget[config.regimeInterval]),
+    strategyCandles: store.getRecentCandles(coin, tradeInterval, config.backfillTarget[tradeInterval]),
+    regimeCandles: store.getRecentCandles(coin, regimeInterval, config.backfillTarget[regimeInterval]),
     dailyCandles: store.getRecentCandles(coin, '1d', config.backfillTarget['1d']),
   }));
 
@@ -192,7 +244,11 @@ function buildPortfolio(store: Store, coins: string[]) {
     ...config.portfolio,
     ...config.backtest,
     regime: config.regime,
+    tradeInterval,
+    regimeInterval,
     backtest: {
+      tradeInterval,
+      regimeInterval,
       detection: {
         touchTolerance: config.touchTolerance,
         touchCooldownMinutes: config.touchCooldownMinutes,
@@ -219,6 +275,41 @@ function buildPortfolio(store: Store, coins: string[]) {
   });
 }
 
+function buildBacktest(store: Store, coin: string, tradeInterval: TradeInterval) {
+  const regimeInterval = config.regimeForTrade[tradeInterval];
+  const strategyCandles = store.getRecentCandles(coin, tradeInterval, config.backfillTarget[tradeInterval]);
+  const regimeCandles = store.getRecentCandles(coin, regimeInterval, config.backfillTarget[regimeInterval]);
+  const dailyCandles = store.getRecentCandles(coin, '1d', config.backfillTarget['1d']);
+
+  return runBacktest(strategyCandles, dailyCandles, {
+    coin,
+    tradeInterval,
+    regimeInterval,
+    detection: {
+      touchTolerance: config.touchTolerance,
+      touchCooldownMinutes: config.touchCooldownMinutes,
+    },
+    strategy: {
+      detection: {
+        touchTolerance: config.touchTolerance,
+        touchCooldownMinutes: config.touchCooldownMinutes,
+      },
+      rangeSignal: {
+        confirmWithinCandles: config.confirmWithinCandles,
+        stopBuffer: config.stopBuffer,
+      },
+      range: config.range,
+      trend: config.trend,
+    },
+    regime: config.regime,
+    feePerSide: config.backtest.feePerSide,
+    slippagePerSide: config.backtest.slippagePerSide,
+    swingLookbackDays: config.swingLookbackDays,
+    pivotWindow: config.pivotWindow,
+    swingMinDistancePct: config.swingMinDistancePct,
+  }, regimeCandles);
+}
+
 function compactPortfolio(result: PortfolioResult): PortfolioResult {
   const step = Math.max(1, Math.ceil(result.timeline.length / 1_200));
   const timeline = result.timeline.filter((_, index) => (
@@ -230,6 +321,11 @@ function compactPortfolio(result: PortfolioResult): PortfolioResult {
     closedTrades: result.closedTrades.slice(-100),
     decisions: result.decisions.slice(-200),
   };
+}
+
+function resolveTradeInterval(url: URL): TradeInterval | null {
+  const requested = url.searchParams.get('interval') ?? config.tradeInterval;
+  return config.tradeIntervals.includes(requested as TradeInterval) ? requested as TradeInterval : null;
 }
 
 function clampLimit(value: number, min: number, max: number) {

@@ -2,12 +2,12 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'RangeBoss',
+  title: 'TrendBoss',
   description: 'Read-only Hyperliquid perpetual level dashboard',
 };
 
 // Apply the saved theme before first paint to avoid a flash of the wrong theme.
-const themeInit = `try{var t=localStorage.getItem('rb-theme');if(t==='light'||t==='dusk'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}`;
+const themeInit = `try{var t=localStorage.getItem('tb-theme');if(t==='light'||t==='dusk'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}`;
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (

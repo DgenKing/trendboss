@@ -56,8 +56,17 @@ export async function getIntervals(): Promise<string[]> {
   return fetchJson<string[]>('/api/intervals');
 }
 
-export async function getPortfolio(): Promise<PortfolioResult> {
-  return fetchJson<PortfolioResult>('/api/portfolio');
+export async function getTradeIntervals(): Promise<string[]> {
+  return fetchJson<string[]>('/api/trade-intervals');
+}
+
+export async function getPortfolio(interval: string): Promise<PortfolioResult> {
+  return fetchJson<PortfolioResult>(`/api/portfolio?interval=${encodeURIComponent(interval)}`);
+}
+
+export async function getBacktest(coin: string, interval: string): Promise<BacktestResult> {
+  const q = `coin=${encodeURIComponent(coin)}&interval=${encodeURIComponent(interval)}`;
+  return fetchJson<BacktestResult>(`/api/backtest?${q}`);
 }
 
 export async function getDashboardData(coin: string, interval: string) {
@@ -96,3 +105,4 @@ async function fetchJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 import type { PortfolioResult } from '../../core/portfolio';
+import type { BacktestResult } from '../../core/backtest';
