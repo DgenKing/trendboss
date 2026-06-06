@@ -1,4 +1,4 @@
-import { config, type TradeInterval } from '../../config';
+import { config, tuningFor, type TradeInterval } from '../../config';
 import { runBacktest, type BacktestResult } from '../core/backtest';
 import { runPortfolioBacktest, type PortfolioResult } from '../core/portfolio';
 import type { Store } from './store';
@@ -232,6 +232,7 @@ function apiIndex(status: MonitorStatus) {
 }
 
 function buildPortfolio(store: Store, coins: string[], tradeInterval: TradeInterval) {
+  const t = tuningFor(tradeInterval);
   const regimeInterval = config.regimeForTrade[tradeInterval];
   const symbols = coins.map((coin) => ({
     coin,
@@ -243,39 +244,40 @@ function buildPortfolio(store: Store, coins: string[], tradeInterval: TradeInter
   return runPortfolioBacktest(symbols, {
     ...config.portfolio,
     ...config.backtest,
-    regime: config.regime,
+    regime: t.regime,
     tradeInterval,
     regimeInterval,
     backtest: {
       tradeInterval,
       regimeInterval,
       detection: {
-        touchTolerance: config.touchTolerance,
-        touchCooldownMinutes: config.touchCooldownMinutes,
+        touchTolerance: t.touchTolerance,
+        touchCooldownMinutes: t.touchCooldownMinutes,
       },
       strategy: {
         detection: {
-          touchTolerance: config.touchTolerance,
-          touchCooldownMinutes: config.touchCooldownMinutes,
+          touchTolerance: t.touchTolerance,
+          touchCooldownMinutes: t.touchCooldownMinutes,
         },
         rangeSignal: {
-          confirmWithinCandles: config.confirmWithinCandles,
-          stopBuffer: config.stopBuffer,
+          confirmWithinCandles: t.confirmWithinCandles,
+          stopBuffer: t.stopBuffer,
         },
-        range: config.range,
-        trend: config.trend,
+        range: t.range,
+        trend: t.trend,
       },
-      regime: config.regime,
+      regime: t.regime,
       feePerSide: config.backtest.feePerSide,
       slippagePerSide: config.backtest.slippagePerSide,
-      swingLookbackDays: config.swingLookbackDays,
-      pivotWindow: config.pivotWindow,
-      swingMinDistancePct: config.swingMinDistancePct,
+      swingLookbackDays: t.swingLookbackDays,
+      pivotWindow: t.pivotWindow,
+      swingMinDistancePct: t.swingMinDistancePct,
     },
   });
 }
 
 function buildBacktest(store: Store, coin: string, tradeInterval: TradeInterval) {
+  const t = tuningFor(tradeInterval);
   const regimeInterval = config.regimeForTrade[tradeInterval];
   const strategyCandles = store.getRecentCandles(coin, tradeInterval, config.backfillTarget[tradeInterval]);
   const regimeCandles = store.getRecentCandles(coin, regimeInterval, config.backfillTarget[regimeInterval]);
@@ -286,27 +288,27 @@ function buildBacktest(store: Store, coin: string, tradeInterval: TradeInterval)
     tradeInterval,
     regimeInterval,
     detection: {
-      touchTolerance: config.touchTolerance,
-      touchCooldownMinutes: config.touchCooldownMinutes,
+      touchTolerance: t.touchTolerance,
+      touchCooldownMinutes: t.touchCooldownMinutes,
     },
     strategy: {
       detection: {
-        touchTolerance: config.touchTolerance,
-        touchCooldownMinutes: config.touchCooldownMinutes,
+        touchTolerance: t.touchTolerance,
+        touchCooldownMinutes: t.touchCooldownMinutes,
       },
       rangeSignal: {
-        confirmWithinCandles: config.confirmWithinCandles,
-        stopBuffer: config.stopBuffer,
+        confirmWithinCandles: t.confirmWithinCandles,
+        stopBuffer: t.stopBuffer,
       },
-      range: config.range,
-      trend: config.trend,
+      range: t.range,
+      trend: t.trend,
     },
-    regime: config.regime,
+    regime: t.regime,
     feePerSide: config.backtest.feePerSide,
     slippagePerSide: config.backtest.slippagePerSide,
-    swingLookbackDays: config.swingLookbackDays,
-    pivotWindow: config.pivotWindow,
-    swingMinDistancePct: config.swingMinDistancePct,
+    swingLookbackDays: t.swingLookbackDays,
+    pivotWindow: t.pivotWindow,
+    swingMinDistancePct: t.swingMinDistancePct,
   }, regimeCandles);
 }
 

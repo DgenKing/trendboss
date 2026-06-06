@@ -1,4 +1,4 @@
-import { assertValidConfig, config } from '../../config';
+import { assertValidConfig, config, tuningFor } from '../../config';
 import { calculateIndicatorSeries, latestIndicatorAt } from '../core/indicators';
 import { computeLevels } from '../core/levels';
 import { RegimeAwareStrategyEngine } from '../core/strategy';
@@ -113,13 +113,14 @@ async function backfillInterval(coin: string, interval: string) {
 }
 
 function computeAndStoreLevels(coin: string) {
+  const t = tuningFor(config.tradeInterval);
   const dailyTarget = config.backfillTarget['1d'] ?? 5000;
   const dailyCandles = store.getRecentCandles(coin, '1d', dailyTarget);
   const levels = computeLevels(dailyCandles, {
     coin,
-    swingLookbackDays: config.swingLookbackDays,
-    pivotWindow: config.pivotWindow,
-    swingMinDistancePct: config.swingMinDistancePct,
+    swingLookbackDays: t.swingLookbackDays,
+    pivotWindow: t.pivotWindow,
+    swingMinDistancePct: t.swingMinDistancePct,
   });
   activeLevels.set(coin, levels);
   store.saveLevels(levels);
@@ -147,6 +148,7 @@ async function handleClosedCandle(coin: string, interval: string, candle: Candle
 
   const levels = activeLevels.get(coin);
   if (!levels) return;
+  const t = tuningFor(config.tradeInterval);
 
   // Trace the exact levels the engine compares against, so signals can be tied
   // to the same Levels the chart shows (single source of truth: activeLevels).
@@ -157,7 +159,7 @@ async function handleClosedCandle(coin: string, interval: string, candle: Candle
   const regimeCandles = store.getRecentCandles(coin, config.regimeInterval, 100);
   const recentEvents = store.getRecentEvents(coin, 200);
   const regime = latestIndicatorAt(
-    calculateIndicatorSeries(regimeCandles, config.regime),
+    calculateIndicatorSeries(regimeCandles, t.regime),
     candle.closeTime,
   );
   const engine = engines.get(coin);
@@ -170,15 +172,15 @@ async function handleClosedCandle(coin: string, interval: string, candle: Candle
     regime,
     options: {
       detection: {
-        touchTolerance: config.touchTolerance,
-        touchCooldownMinutes: config.touchCooldownMinutes,
+        touchTolerance: t.touchTolerance,
+        touchCooldownMinutes: t.touchCooldownMinutes,
       },
       rangeSignal: {
-          confirmWithinCandles: config.confirmWithinCandles,
-          stopBuffer: config.stopBuffer,
+        confirmWithinCandles: t.confirmWithinCandles,
+        stopBuffer: t.stopBuffer,
       },
-      range: config.range,
-      trend: config.trend,
+      range: t.range,
+      trend: t.trend,
     },
   });
 

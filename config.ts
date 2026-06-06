@@ -15,6 +15,38 @@ const coins = (process.env.COINS ?? DEFAULT_COINS.join(','))
 export const tradeIntervals = ['15m', '1h', '2h', '4h'] as const;
 export type TradeInterval = typeof tradeIntervals[number];
 
+export type IntervalTuning = {
+  swingLookbackDays: number;
+  pivotWindow: number;
+  swingMinDistancePct: number;
+  touchTolerance: number;
+  touchCooldownMinutes: number;
+  confirmWithinCandles: number;
+  stopBuffer: number;
+  regime: {
+    adxPeriod: number;
+    adxThreshold: number;
+    fastEmaPeriod: number;
+    slowEmaPeriod: number;
+    slowEmaSlopeLookback: number;
+  };
+  trend: {
+    breakoutLookback: number;
+    atrPeriod: number;
+    atrStopMultiple: number;
+    targetR: number;
+    rsiPeriod: number;
+    rsiLongMin: number;
+    rsiShortMax: number;
+  };
+  range: {
+    enabled: boolean;
+    maxAdx: number;
+    targetR: number;
+    minScore: number;
+  };
+};
+
 const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
 const regimeForTrade = {
   '15m': '1h',
@@ -40,36 +72,136 @@ export const config = {
   } as Record<string, number>,
   backfillWeightBudgetPerMin: 900,
   backfillRequestSpacingMs: 300,
-  swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
-  pivotWindow: 2,
-  swingMinDistancePct: 0.015,  // a swing must be >=1.5% beyond the range, else it's the same peak -> null
-
-  touchTolerance: 0.0008,      // 0.08%
-  touchCooldownMinutes: 60,
-  confirmWithinCandles: 3,
-  stopBuffer: 0.0005,
-  regime: {
-    adxPeriod: 14,
-    adxThreshold: 22,
-    fastEmaPeriod: 20,
-    slowEmaPeriod: 50,
-    slowEmaSlopeLookback: 10,
-  },
-  trend: {
-    breakoutLookback: 40,
-    atrPeriod: 14,
-    atrStopMultiple: 2.5,
-    targetR: 2.5,
-    rsiPeriod: 14,
-    rsiLongMin: 60,
-    rsiShortMax: 40,
-  },
-  range: {
-    enabled: true,
-    maxAdx: 12,
-    targetR: 2,
-    minScore: 80,
-  },
+  tuning: {
+    // ===== 15m tuning =====
+    '15m': {
+      swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
+      pivotWindow: 2,
+      swingMinDistancePct: 0.015,  // a swing must be >=1.5% beyond the range, else it's the same peak -> null
+      touchTolerance: 0.0008,      // 0.08%
+      touchCooldownMinutes: 60,
+      confirmWithinCandles: 3,
+      stopBuffer: 0.0005,
+      regime: {
+        adxPeriod: 14,
+        adxThreshold: 22,
+        fastEmaPeriod: 20,
+        slowEmaPeriod: 50,
+        slowEmaSlopeLookback: 10,
+      },
+      trend: {
+        breakoutLookback: 40,
+        atrPeriod: 14,
+        atrStopMultiple: 2.5,
+        targetR: 2.5,
+        rsiPeriod: 14,
+        rsiLongMin: 60,
+        rsiShortMax: 40,
+      },
+      range: {
+        enabled: true,
+        maxAdx: 12,
+        targetR: 2,
+        minScore: 80,
+      },
+    },
+    // ===== 1h tuning =====
+    '1h': {
+      swingLookbackDays: 0,
+      pivotWindow: 2,
+      swingMinDistancePct: 0.015,
+      touchTolerance: 0.0008,
+      touchCooldownMinutes: 60,
+      confirmWithinCandles: 3,
+      stopBuffer: 0.0005,
+      regime: {
+        adxPeriod: 14,
+        adxThreshold: 22,
+        fastEmaPeriod: 20,
+        slowEmaPeriod: 50,
+        slowEmaSlopeLookback: 10,
+      },
+      trend: {
+        breakoutLookback: 40,
+        atrPeriod: 14,
+        atrStopMultiple: 2.5,
+        targetR: 2.5,
+        rsiPeriod: 14,
+        rsiLongMin: 60,
+        rsiShortMax: 40,
+      },
+      range: {
+        enabled: true,
+        maxAdx: 12,
+        targetR: 2,
+        minScore: 80,
+      },
+    },
+    // ===== 2h tuning =====
+    '2h': {
+      swingLookbackDays: 0,
+      pivotWindow: 2,
+      swingMinDistancePct: 0.015,
+      touchTolerance: 0.0008,
+      touchCooldownMinutes: 60,
+      confirmWithinCandles: 3,
+      stopBuffer: 0.0005,
+      regime: {
+        adxPeriod: 14,
+        adxThreshold: 22,
+        fastEmaPeriod: 20,
+        slowEmaPeriod: 50,
+        slowEmaSlopeLookback: 10,
+      },
+      trend: {
+        breakoutLookback: 40,
+        atrPeriod: 14,
+        atrStopMultiple: 2.5,
+        targetR: 2.5,
+        rsiPeriod: 14,
+        rsiLongMin: 60,
+        rsiShortMax: 40,
+      },
+      range: {
+        enabled: true,
+        maxAdx: 12,
+        targetR: 2,
+        minScore: 80,
+      },
+    },
+    // ===== 4h tuning =====
+    '4h': {
+      swingLookbackDays: 0,
+      pivotWindow: 2,
+      swingMinDistancePct: 0.015,
+      touchTolerance: 0.0008,
+      touchCooldownMinutes: 60,
+      confirmWithinCandles: 3,
+      stopBuffer: 0.0005,
+      regime: {
+        adxPeriod: 14,
+        adxThreshold: 22,
+        fastEmaPeriod: 20,
+        slowEmaPeriod: 50,
+        slowEmaSlopeLookback: 10,
+      },
+      trend: {
+        breakoutLookback: 40,
+        atrPeriod: 14,
+        atrStopMultiple: 2.5,
+        targetR: 2.5,
+        rsiPeriod: 14,
+        rsiLongMin: 60,
+        rsiShortMax: 40,
+      },
+      range: {
+        enabled: true,
+        maxAdx: 12,
+        targetR: 2,
+        minScore: 80,
+      },
+    },
+  } as Record<TradeInterval, IntervalTuning>,
   backtest: {
     feePerSide: 0.00035,
     slippagePerSide: 0.00015,
@@ -93,6 +225,10 @@ export const config = {
   restUrl: 'https://api.hyperliquid.xyz/info',
   wsUrl: 'wss://api.hyperliquid.xyz/ws',
 } as const;
+
+export function tuningFor(interval: TradeInterval): IntervalTuning {
+  return config.tuning[interval];
+}
 
 export function assertValidConfig() {
   validateConfig(config);

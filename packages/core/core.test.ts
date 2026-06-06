@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { config, validateConfig } from '../../config';
+import { config, tuningFor, validateConfig } from '../../config';
 import { createIntervalResultCache, getCachedIntervalResult } from '../monitor/api';
 import { runBacktest } from './backtest';
 import { ReversionSignalTracker, detectTouch } from './detect';
@@ -52,6 +52,12 @@ describe('trade interval config', () => {
     });
     expect(config.candleInterval).toBe(config.tradeInterval);
     expect(config.regimeInterval).toBe(config.regimeForTrade[config.tradeInterval]);
+  });
+
+  test('returns tuning by trade interval', () => {
+    for (const interval of config.tradeIntervals) {
+      expect(tuningFor(interval)).toBe(config.tuning[interval]);
+    }
   });
 
   test('rejects an unsupported trade interval', () => {

@@ -59,6 +59,15 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-06 — Implemented per-timeframe tuning blocks
+- Added `IntervalTuning`, explicit `15m`/`1h`/`2h`/`4h` tuning blocks, and `tuningFor(interval)` in
+  `config.ts`; the `15m` values are the prior globals, and the other intervals are identical copies for now.
+- Rewired monitor backtest/portfolio API builders and live candle evaluation to read swing, detection,
+  regime, trend, and range settings from the selected interval's tuning block.
+- Saved the all-interval Step 0 baseline at `docs/superpowers/baselines/2026-06-06-tuning-baseline.json`;
+  after implementation, regenerated output for all four intervals diffed byte-identical against it.
+- Verified `bun run check` is clean.
+
 ### 2026-06-06 — Implemented switchable trading timeframe
 - Added `TRADE_INTERVAL` / `tradeInterval` support for `15m`, `1h`, `2h`, and `4h`, with regime mapping
   `15m→1h`, `1h→4h`, `2h→4h`, `4h→1d`; default `15m` remains unchanged.
@@ -108,5 +117,38 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 - STILL TO DO BY USER (not code): rename the GitHub repo + local folder from `rangeboss` to
   `trendboss` if desired — that's a git/GitHub action (would change the clone URL and require
   BenClawBot to update his remote). Internal package names are `hl-level-monitor` and were left as-is.
+
+### 2026-06-06 — Spec'd per-timeframe parameter tuning for Codex
+- **Decision:** give each trade timeframe (`15m`/`1h`/`2h`/`4h`) its own block of tunable
+  strategy params, instead of all four sharing one global set. This is the follow-up task that
+  the switchable-timeframe spec explicitly deferred as "separate, must-be-approved" — now approved.
+- **Reason:** candle-based params (e.g. 40-candle breakout lookback) mean very different wall-clock
+  windows per timeframe (~10h on 15m vs ~160h on 4h), so one global setting can't suit all.
+- **Hard rule recorded:** `15m` block keeps the EXACT current values and must produce identical
+  output; `1h`/`2h`/`4h` blocks start as identical copies — this task is WIRING ONLY, no new numbers.
+- **Fields moving per-interval:** swingLookbackDays, pivotWindow, swingMinDistancePct, touchTolerance,
+  touchCooldownMinutes, confirmWithinCandles, stopBuffer, regime{}, trend{}, range{}.
+- **Staying global:** fees/slippage, risk sizing, margin caps, coins, intervals/backfill, infra.
+- **Consumers to rewire:** `packages/monitor/api.ts` (`buildPortfolio`, `buildBacktest`) and
+  `packages/monitor/index.ts` (`computeAndStoreLevels`, `handleClosedCandle`) via a new
+  `tuningFor(interval)` helper in `config.ts`.
+- **Wrote for Codex to implement:**
+  - Spec: `docs/superpowers/specs/2026-06-06-per-timeframe-tuning-design.md`
+  - Plan: `docs/superpowers/plans/2026-06-06-per-timeframe-tuning.md`
+- **Status:** spec + plan written; implementation NOT started yet. New branch `tune-settings`.
+
+### 2026-06-06 — Rewrote README for the current (TrendBoss) engine
+- The README still described the old RangeBoss **monitor-only** app (backtesting listed as
+  "out of scope"). Rewrote it from a full read of `packages/core` to describe what the app
+  actually is now: a regime-aware strategy + backtester + shared-capital portfolio simulator,
+  plus the original live monitor/dashboard/Telegram alerts.
+- Added plain-English "How it works" sections explaining: level computation (`levels.ts`),
+  regime detection via EMA/ADX/RSI (`indicators.ts`), trade detection for TREND_MOMENTUM and
+  RANGE_REVERSION (`strategy.ts` + `detect.ts`), the backtester with fees/slippage
+  (`backtest.ts`), and the shared-capital portfolio simulator (`portfolio.ts`).
+- Documented the switchable trade timeframe + data-depth table, refreshed the config table,
+  API endpoints (incl. `/api/backtest`, `/api/portfolio`, `/api/trade-intervals`), and scope.
+- Title is now `# TrendBo$$ — Hyperliquid Regime Strategy & Monitor`; kept the animated banner.
+- Docs-only change; no code touched.
 
 <!-- Add your next entry above this line -->
