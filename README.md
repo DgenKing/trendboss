@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/trendboss-banner.svg" alt="TrendBo$$ — Hyperliquid Trend Monitor" width="100%">
+</p>
+
 # TrendBo$$ — Hyperliquid Trend Monitor
 
 A self-hosted monitor for **Hyperliquid perpetuals** that automatically marks the key price levels on a chart, watches live 15-minute candles, and alerts you the moment price touches a level — via Telegram and a read-only web dashboard.
