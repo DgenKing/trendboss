@@ -37,9 +37,9 @@ money.
   R-multiples, win rate, profit factor, drawdown, and an in-sample / out-of-sample split.
 - **Simulates a shared-capital portfolio** — one account, all coins competing for the same
   margin, so the numbers aren't a misleading sum of isolated per-coin tests.
-- **Switchable trade timeframe** — run the whole engine on `15m`, `1h`, `2h`, or `4h`.
-  Higher timeframes have far deeper Hyperliquid history, so backtests can cover real
-  bull/bear/range cycles instead of only ~52 days.
+- **Switchable trade timeframe** — run the whole engine on `5m`, `15m`, `1h`, `2h`, or `4h`.
+  `5m` is a short-window observation mode; higher timeframes have far deeper Hyperliquid
+  history, so backtests can cover real bull/bear/range cycles.
 - **Live touch & break detection + Telegram alerts** — fires within one closed candle of
   price tagging a level.
 - **Web dashboard** — candlestick chart with the level lines, a live signal feed, a
@@ -140,15 +140,17 @@ simulates **one real account**:
 
 | Trade interval | Regime interval | Hyperliquid history (approx) |
 |---|---|---|
+| `5m` | `1h` | ~17 days |
 | `15m` (default) | `1h` | ~52 days |
 | `1h` | `4h` | ~208 days |
 | `2h` | `4h` | ~417 days |
 | `4h` | `1d` | ~833 days (~2.3 years) |
 
-Hyperliquid only retains ~52 days of 15m candles — older 15m data does not exist on the
-API. Higher timeframes reach much further back, which is the whole reason the timeframe is
-switchable. Strategy parameters are expressed **in candles** and are not auto-rescaled per
-timeframe (per-timeframe tuning is a separate, opt-in effort).
+Hyperliquid only retains ~17 days of 5m candles and ~52 days of 15m candles — older data
+at those granularities does not exist on the API. Higher timeframes reach much further back,
+which is the whole reason the timeframe is switchable. Strategy parameters are expressed
+**in candles** and are not auto-rescaled per timeframe (per-timeframe tuning is a separate,
+opt-in effort).
 
 ---
 
@@ -244,7 +246,7 @@ bun test            # core strategy unit tests
 bun run check       # tests + TypeScript type-check
 ```
 
-Pick the trade timeframe with the `TRADE_INTERVAL` env var (`15m` | `1h` | `2h` | `4h`),
+Pick the trade timeframe with the `TRADE_INTERVAL` env var (`5m` | `15m` | `1h` | `2h` | `4h`),
 e.g. `TRADE_INTERVAL=4h bun run monitor`. The dashboard also has a timeframe switcher for
 the backtest and portfolio panels.
 
@@ -258,7 +260,7 @@ All configuration lives in [`config.ts`](config.ts). Key options:
 |---|---|---|
 | `coins` | `BTC, ETH, SOL, …` | Perps to monitor. Override with `COINS`, e.g. `COINS="ETH,SOL,xyz:SP500"`. |
 | `tradeInterval` | `15m` | Timeframe the strategy trades on. Override with `TRADE_INTERVAL`. |
-| `regimeForTrade` | `15m→1h, 1h→4h, 2h→4h, 4h→1d` | Higher timeframe used to classify the regime. |
+| `regimeForTrade` | `5m→1h, 15m→1h, 1h→4h, 2h→4h, 4h→1d` | Higher timeframe used to classify the regime. |
 | `swingLookbackDays` | `0` | `0` = scan all available history for swing levels. |
 | `pivotWindow` | `2` | Fractal pivot window for swing detection. |
 | `swingMinDistancePct` | `0.015` | A swing must be ≥1.5% beyond the range to count. |

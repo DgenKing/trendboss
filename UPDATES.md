@@ -59,6 +59,31 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-07 — Tuned 5m with strict drawdown gates
+- Tested 100 realistic `5m` tuning combinations against the shared portfolio, requiring whole/older/recent
+  windows to be profitable with max drawdown `<=20%`, plus whole-history PF `>1.3`; 2 candidates survived.
+- Kept the highest-return survivor: `touchTolerance=0.0006`, `adxThreshold=38`,
+  `breakoutLookback=80`, `atrStopMultiple=3.4`, `targetR=2.2`, `rsiLongMin=62`,
+  `rsiShortMax=38`, `range.maxAdx=16`, `range.targetR=2.4`, `range.minScore=80`.
+- Shared 5m portfolio now passes the hard gates in all three windows:
+  whole history return `66.45%`, PF `1.471`, max DD `19.64%`, win `43.48%`;
+  older 70% return `18.86%`, PF `1.350`, max DD `16.79%`, win `39.39%`;
+  recent 30% return `8.84%`, PF `1.141`, max DD `19.64%`, win `39.06%`.
+- Caveat still applies: 5m only covers about `17` days of Hyperliquid history and has heavy fee drag,
+  so this is a small-sample experimental block, not robust proof of an edge.
+- Verified the `15m`, `1h`, `2h`, and `4h` tuning blocks are unchanged.
+
+### 2026-06-07 — Added 5m trade timeframe
+- Added `5m` as the first selectable trade timeframe in config/API/dashboard, mapped it to the `1h`
+  regime interval, included it in chart/backfill targets, and left the default active trade interval as `15m`.
+- Added a `// ===== 5m tuning =====` block as an exact copy of the current `15m` tuning block; no 5m-specific
+  tuning was done in this task.
+- Verified `15m`, `1h`, `2h`, and `4h` backtest/portfolio snapshots are byte-identical to the Step 0 baseline.
+- Verified 5m end-to-end on a temp BTC monitor DB: backfill cached 5,000 5m candles, `?interval=5m`
+  returned backtest + portfolio results, and the dashboard selector served `5m | 15m | 1h | 2h | 4h`.
+- Caveat: Hyperliquid's 5m cache is only about `17` days, so 5m results are small-sample observation data,
+  not robust evidence of an edge.
+
 ### 2026-06-07 — Re-verified switchable trading timeframe
 - Refreshed the default `15m` Step 0 baseline at `docs/superpowers/baselines/2026-06-06-15m-baseline.json`
   against the current local candle cache, then re-ran the default path after verification and confirmed it diffed clean.
@@ -256,5 +281,33 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 - **Goal after rules pass:** highest return with lowest drawdown; prefer lower drawdown.
 - **If nothing passes:** Codex must stop and report, not force a fake-good result.
 - 4h history is ~833 days (~2.3yr, regime interval 1d) — the deepest window of the four.
+
+### 2026-06-07 — Spec'd adding the 5m trade timeframe for Codex
+- **Decision:** add `5m` as a selectable trade timeframe (backtest + portfolio + dashboard),
+  alongside the existing 15m/1h/2h/4h. Additive only — no existing timeframe changes.
+- **Regime mapping:** `5m → 1h` (stable, deep-history regime source). Other mappings unchanged.
+- **Tuning:** the 5m block starts as an EXACT copy of the 15m block — NOT tuned in this task.
+- **Recorded caveat (important):** Hyperliquid serves ~5,000 candles per timeframe, so 5m has
+  only ~17 days of history. Backtests will be small-sample / statistically weak and fee drag is
+  heavier on a fast timeframe. 5m is for observation/experimentation, not a proven edge. The UI
+  should show the short history depth like the other timeframes.
+- **Deliberately NOT adding 1m or 3m:** too little history (~3.5d / ~10d) and too much fee drag.
+- **Hard rule:** 15m/1h/2h/4h output must stay byte-identical.
+- **Wrote for Codex to implement:**
+  - Spec: `docs/superpowers/specs/2026-06-07-add-5m-timeframe-design.md`
+  - Plan: `docs/superpowers/plans/2026-06-07-add-5m-timeframe.md`
+- **Status:** spec + plan written; implementation NOT started yet.
+
+### 2026-06-07 — Tasked Codex with tuning the 5m block (same strict gates)
+- **Scope:** tune ONLY the `5m` tuning block in `config.ts`. Leave 15m/1h/2h/4h untouched.
+- **Same hard rules as the 1h/2h/4h tunes (any failure = reject):**
+  1. Max drawdown ≤ 20% in every window.
+  2. Profitable on the WHOLE history AND the older 70% AND the recent 30% — no window may lose money.
+  3. Profit factor > 1.3 on the whole history.
+- **Goal after rules pass:** highest return with lowest drawdown; prefer lower drawdown.
+- **Starting point:** untuned 5m (copy of 15m) currently returns ~-22.9%, max DD ~34.6% over
+  463 trades — fails the gates badly, as expected for a fast timeframe.
+- **Honest expectation:** 5m has only ~17 days of history and heavy fee drag, so it may NOT pass.
+  If nothing passes, Codex must STOP and report "no settings work" — do not force a fake result.
 
 <!-- Add your next entry above this line -->

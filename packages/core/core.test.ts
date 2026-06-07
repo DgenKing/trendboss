@@ -22,8 +22,9 @@ function validConfigForValidation() {
   return {
     coins: ['ETH'],
     tradeInterval: '15m',
-    tradeIntervals: ['15m', '1h', '2h', '4h'],
+    tradeIntervals: ['5m', '15m', '1h', '2h', '4h'],
     regimeForTrade: {
+      '5m': '1h',
       '15m': '1h',
       '1h': '4h',
       '2h': '4h',
@@ -31,8 +32,9 @@ function validConfigForValidation() {
     },
     candleInterval: '15m',
     regimeInterval: '1h',
-    chartIntervals: ['15m', '1h', '2h', '4h', '1d'],
+    chartIntervals: ['5m', '15m', '1h', '2h', '4h', '1d'],
     backfillTarget: {
+      '5m': 5000,
       '15m': 5000,
       '1h': 5000,
       '2h': 5000,
@@ -45,6 +47,7 @@ function validConfigForValidation() {
 describe('trade interval config', () => {
   test('maps each trade interval to the intended regime interval', () => {
     expect(config.regimeForTrade).toEqual({
+      '5m': '1h',
       '15m': '1h',
       '1h': '4h',
       '2h': '4h',
@@ -58,6 +61,10 @@ describe('trade interval config', () => {
     for (const interval of config.tradeIntervals) {
       expect(tuningFor(interval)).toBe(config.tuning[interval]);
     }
+  });
+
+  test('keeps 5m tuning independent from 15m after tuning', () => {
+    expect(config.tuning['5m']).not.toEqual(config.tuning['15m']);
   });
 
   test('rejects an unsupported trade interval', () => {

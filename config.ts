@@ -12,7 +12,7 @@ const coins = (process.env.COINS ?? DEFAULT_COINS.join(','))
   .map(normalizeCoin)
   .filter(Boolean);
 
-export const tradeIntervals = ['15m', '1h', '2h', '4h'] as const;
+export const tradeIntervals = ['5m', '15m', '1h', '2h', '4h'] as const;
 export type TradeInterval = typeof tradeIntervals[number];
 
 export type IntervalTuning = {
@@ -49,6 +49,7 @@ export type IntervalTuning = {
 
 const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
 const regimeForTrade = {
+  '5m': '1h',
   '15m': '1h',
   '1h': '4h',
   '2h': '4h',
@@ -62,8 +63,9 @@ export const config = {
   regimeForTrade,
   candleInterval: tradeInterval,
   regimeInterval: regimeForTrade[tradeInterval],
-  chartIntervals: ['15m', '1h', '2h', '4h', '1d'] as const,
+  chartIntervals: ['5m', '15m', '1h', '2h', '4h', '1d'] as const,
   backfillTarget: {
+    '5m': 5000,
     '15m': 5000,
     '1h': 5000,
     '2h': 5000,
@@ -73,6 +75,38 @@ export const config = {
   backfillWeightBudgetPerMin: 900,
   backfillRequestSpacingMs: 300,
   tuning: {
+    // ===== 5m tuning =====
+    '5m': {
+      swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
+      pivotWindow: 2,
+      swingMinDistancePct: 0.015,  // a swing must be >=1.5% beyond the range, else it's the same peak -> null
+      touchTolerance: 0.0006,      // 0.06%
+      touchCooldownMinutes: 60,
+      confirmWithinCandles: 3,
+      stopBuffer: 0.0005,
+      regime: {
+        adxPeriod: 14,
+        adxThreshold: 38,
+        fastEmaPeriod: 20,
+        slowEmaPeriod: 50,
+        slowEmaSlopeLookback: 10,
+      },
+      trend: {
+        breakoutLookback: 80,
+        atrPeriod: 14,
+        atrStopMultiple: 3.4,
+        targetR: 2.2,
+        rsiPeriod: 14,
+        rsiLongMin: 62,
+        rsiShortMax: 38,
+      },
+      range: {
+        enabled: true,
+        maxAdx: 16,
+        targetR: 2.4,
+        minScore: 80,
+      },
+    },
     // ===== 15m tuning =====
     '15m': {
       swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
@@ -269,6 +303,19 @@ export function validateConfig(candidate: {
   }
   if (!candidate.chartIntervals.includes(mappedRegimeInterval)) {
     throw new Error(`Regime interval ${mappedRegimeInterval} must be listed in chartIntervals.`);
+  }
+
+  for (const interval of candidate.tradeIntervals) {
+    const regimeInterval = candidate.regimeForTrade[interval];
+    if (!regimeInterval) {
+      throw new Error(`Trade interval ${interval} is missing a regime interval mapping.`);
+    }
+    if (!candidate.chartIntervals.includes(interval)) {
+      throw new Error(`Trade interval ${interval} must be listed in chartIntervals.`);
+    }
+    if (!candidate.chartIntervals.includes(regimeInterval)) {
+      throw new Error(`Regime interval ${regimeInterval} must be listed in chartIntervals.`);
+    }
   }
 
   for (const interval of candidate.chartIntervals) {

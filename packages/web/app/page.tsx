@@ -60,14 +60,16 @@ type PortfolioLoadState = {
 const emptyPortfolio: PortfolioLoadState = { result: null, loading: false, error: null };
 
 const BACKTEST_REFRESH_MS = 60_000;
-const DEFAULT_TRADE_INTERVALS = ['15m', '1h', '2h', '4h'];
+const DEFAULT_TRADE_INTERVALS = ['5m', '15m', '1h', '2h', '4h'];
 const REGIME_BY_TRADE: Record<string, string> = {
+  '5m': '1h',
   '15m': '1h',
   '1h': '4h',
   '2h': '4h',
   '4h': '1d',
 };
 const HISTORY_DEPTH_BY_TRADE: Record<string, string> = {
+  '5m': '~17 days',
   '15m': '~52 days',
   '1h': '~208 days',
   '2h': '~417 days',

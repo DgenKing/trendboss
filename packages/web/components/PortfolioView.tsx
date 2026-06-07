@@ -198,6 +198,7 @@ function latestDecisions(
 
 function historyDepth(interval: string) {
   return ({
+    '5m': '~17 days',
     '15m': '~52 days',
     '1h': '~208 days',
     '2h': '~417 days',
