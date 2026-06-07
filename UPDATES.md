@@ -59,6 +59,19 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-07 — Tuned 2h with strict drawdown gates
+- Tested 101 `2h` tuning combinations; 3 passed the portfolio/account hard gates, and the best survivor was
+  `breakoutLookback=64`, `atrStopMultiple=3.1`, `targetR=2.2`, `rsiLongMin=68`,
+  `rsiShortMax=32`, `range.maxAdx=8`, `range.targetR=1.4`, `range.minScore=75`.
+  `touchTolerance=0.0008` and `adxThreshold=22` stayed unchanged.
+- Shared 2h portfolio now passes the hard gates in all three windows:
+  whole history return `135.26%`, PF `2.279`, max DD `17.74%`, win `51.22%`;
+  older 70% return `31.34%`, PF `1.500`, max DD `17.74%`, win `44.90%`;
+  recent 30% return `76.85%`, PF `3.511`, max DD `6.56%`, win `60.61%`.
+- Diagnostic note: aggregate isolated backtests are profitable in all windows, but still show higher
+  standalone R-drawdown (whole `28.22R`, older `22.48R`) than the shared account drawdown.
+- Verified `bun run check` is clean and the `config.ts` diff touches only the `2h` tuning block.
+
 ### 2026-06-07 — Re-tuned 1h with strict drawdown gates
 - Replaced the rejected high-recent-return 1h block with the only portfolio/account-level survivor from
   102 tested combinations: `touchTolerance=0.0006`, `adxThreshold=30`, `breakoutLookback=48`,
@@ -202,5 +215,15 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 - **Goal after rules pass:** highest return with the lowest drawdown; prefer lower drawdown.
 - **If nothing passes:** Codex must stop and report, not force a fake-good result.
 - Still 1h only; 15m/2h/4h untouched.
+
+### 2026-06-07 — Tasked Codex with tuning the 2h block (same strict gates)
+- **Scope:** tune ONLY the `2h` tuning block in `config.ts`. Leave 15m/1h/4h untouched.
+- **Same hard rules as the 1h re-tune (any failure = reject):**
+  1. Max drawdown ≤ 20% in every window.
+  2. Profitable on the WHOLE history AND the older 70% AND the recent 30% — no window may lose money.
+  3. Profit factor > 1.3 on the whole history.
+- **Goal after rules pass:** highest return with lowest drawdown; prefer lower drawdown.
+- **If nothing passes:** Codex must stop and report, not force a fake-good result.
+- 2h history is ~417 days (regime interval 4h), so the backtest covers a deeper window than 1h.
 
 <!-- Add your next entry above this line -->
