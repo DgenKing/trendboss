@@ -59,6 +59,20 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-07 — Tuned 4h with strict drawdown gates
+- Tested 101 `4h` tuning combinations; 57 passed the portfolio/account hard gates. Picked the
+  highest whole-history return survivor: `touchTolerance=0.0015`, `adxThreshold=18`,
+  `breakoutLookback=16`, `atrStopMultiple=2.2`, `targetR=1.4`, `rsiLongMin=62`,
+  `rsiShortMax=38`, `range.maxAdx=12`, `range.targetR=1.6`, `range.minScore=85`.
+- Shared 4h portfolio now passes the hard gates in all three windows:
+  whole history return `47.75%`, PF `3.221`, max DD `11.85%`, win `67.65%`;
+  older 70% return `9.39%`, PF `1.483`, max DD `11.85%`, win `52.94%`;
+  recent 30% return `34.64%`, PF `8.724`, max DD `5.02%`, win `82.35%`.
+- Diagnostic note: the 4h portfolio sample is smaller than 2h (`34` closed trades total,
+  split `17` older / `17` recent). Aggregate isolated backtests are profitable in all windows,
+  but whole/older standalone R-drawdown sits just above `20R`.
+- Verified `bun run check` is clean and the `config.ts` diff touches only the `4h` tuning block.
+
 ### 2026-06-07 — Tuned 2h with strict drawdown gates
 - Tested 101 `2h` tuning combinations; 3 passed the portfolio/account hard gates, and the best survivor was
   `breakoutLookback=64`, `atrStopMultiple=3.1`, `targetR=2.2`, `rsiLongMin=68`,
@@ -225,5 +239,15 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 - **Goal after rules pass:** highest return with lowest drawdown; prefer lower drawdown.
 - **If nothing passes:** Codex must stop and report, not force a fake-good result.
 - 2h history is ~417 days (regime interval 4h), so the backtest covers a deeper window than 1h.
+
+### 2026-06-07 — Tasked Codex with tuning the 4h block (same strict gates)
+- **Scope:** tune ONLY the `4h` tuning block in `config.ts`. Leave 15m/1h/2h untouched.
+- **Same hard rules as the 1h/2h tunes (any failure = reject):**
+  1. Max drawdown ≤ 20% in every window.
+  2. Profitable on the WHOLE history AND the older 70% AND the recent 30% — no window may lose money.
+  3. Profit factor > 1.3 on the whole history.
+- **Goal after rules pass:** highest return with lowest drawdown; prefer lower drawdown.
+- **If nothing passes:** Codex must stop and report, not force a fake-good result.
+- 4h history is ~833 days (~2.3yr, regime interval 1d) — the deepest window of the four.
 
 <!-- Add your next entry above this line -->
