@@ -59,6 +59,13 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-07 — Re-verified switchable trading timeframe
+- Refreshed the default `15m` Step 0 baseline at `docs/superpowers/baselines/2026-06-06-15m-baseline.json`
+  against the current local candle cache, then re-ran the default path after verification and confirmed it diffed clean.
+- Verified `15m`, `1h`, `2h`, and `4h` all run through the backtest/portfolio engine; BTC history spans
+  approximately `52`, `208`, `417`, and `833` days respectively, with `2h` candles present in the local cache.
+- Re-ran `bun run check` successfully; no build was run.
+
 ### 2026-06-07 — Tuned 4h with strict drawdown gates
 - Tested 101 `4h` tuning combinations; 57 passed the portfolio/account hard gates. Picked the
   highest whole-history return survivor: `touchTolerance=0.0015`, `adxThreshold=18`,
