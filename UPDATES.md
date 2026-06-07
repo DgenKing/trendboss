@@ -59,6 +59,37 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-07 — Re-tuned 1h with strict drawdown gates
+- Replaced the rejected high-recent-return 1h block with the only portfolio/account-level survivor from
+  102 tested combinations: `touchTolerance=0.0006`, `adxThreshold=30`, `breakoutLookback=48`,
+  `atrStopMultiple=2.8`, `targetR=3`, `rsiLongMin=65`, `rsiShortMax=35`,
+  `range.maxAdx=16`, `range.targetR=2`, `range.minScore=85`.
+- Shared 1h portfolio now passes the hard gates in all three windows:
+  whole history return `57.12%`, PF `1.426`, max DD `17.28%`, win `32.58%`;
+  older 70% return `12.33%`, PF `1.128`, max DD `17.28%`, win `27.59%`;
+  recent 30% return `38.81%`, PF `1.919`, max DD `14.91%`, win `41.94%`.
+- Diagnostic note: aggregate isolated backtests are still weaker than the shared account result
+  (older 70% return `-16.17%`, PF `0.937`), so this is a stricter/account-safe 1h block,
+  not proof that every standalone symbol backtest is healthy yet.
+- Verified `bun run check` is clean and the `config.ts` diff touches only the `1h` tuning block.
+
+### 2026-06-06 — Tuned the 1h parameter block
+- Ran 100 deterministic 1h tuning iterations; 20 candidates improved out-of-sample return + profit factor
+  without worsening out-of-sample drawdown.
+- Kept the best 1h block found: `touchTolerance=0.0015`, `breakoutLookback=96`,
+  `atrStopMultiple=3.4`, `targetR=4.2`, `rsiLongMin=58`, `rsiShortMax=42`,
+  `range.maxAdx=10`, `range.targetR=3`, `range.minScore=85`; `adxThreshold` stayed `22`.
+- Aggregate backtests: in-sample moved from return `-86.99%`, PF `0.873`, max DD `39.56R`,
+  win `27.73%` to return `-96.35%`, PF `0.801`, max DD `45.84R`, win `16.67%`; out-of-sample
+  improved from return `104.23%`, PF `1.134`, max DD `14.87R`, win `32.76%` to return
+  `338.75%`, PF `2.145`, max DD `9.80R`, win `33.75%`.
+- Shared portfolio: in-sample improved from return `-27.35%`, PF `0.702`, max DD `35.49%`,
+  win `24.76%` to return `48.14%`, PF `1.545`, max DD `26.79%`, win `26.92%`; out-of-sample
+  improved from return `74.10%`, PF `1.826`, max DD `19.17%`, win `42.25%` to return
+  `121.40%`, PF `3.646`, max DD `11.11%`, win `39.39%`.
+- Verified `bun run check` is clean and that current 15m output is byte-identical when only the
+  runtime 1h block is toggled between the starting and tuned values.
+
 ### 2026-06-06 — Implemented per-timeframe tuning blocks
 - Added `IntervalTuning`, explicit `15m`/`1h`/`2h`/`4h` tuning blocks, and `tuningFor(interval)` in
   `config.ts`; the `15m` values are the prior globals, and the other intervals are identical copies for now.
@@ -150,5 +181,26 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
   API endpoints (incl. `/api/backtest`, `/api/portfolio`, `/api/trade-intervals`), and scope.
 - Title is now `# TrendBo$$ — Hyperliquid Regime Strategy & Monitor`; kept the animated banner.
 - Docs-only change; no code touched.
+
+### 2026-06-06 — Tasked Codex with iterative tuning of the 1h block
+- **Scope:** tune ONLY the `1h` tuning block in `config.ts`. Leave 15m/2h/4h untouched.
+- **Goal:** improve the 1h backtest/portfolio results — higher profit (return / profit
+  factor) AND lower max drawdown — via iterative search (~100 iterations).
+- **Anti-overfit rule:** judge on out-of-sample; only keep a change if it improves the
+  out-of-sample segment, not just in-sample. Save best params + before/after numbers.
+- **Status:** handed to Codex; 15m baseline must stay byte-identical.
+
+### 2026-06-06 — Rejected the first 1h tune; re-tuning with hard rules
+- **Rejected** the previous 1h tune: it made +338% on the recent 30% but LOST ~96% on the
+  older 70% (blown account). That's overfitting to the recent window, not a real edge — the
+  earlier tuning judged only the out-of-sample slice, which turned the holdout into training data.
+- **New hard rules for re-tuning the 1h block (any failure = reject the settings):**
+  1. Max drawdown ≤ 20% in every window.
+  2. Must be profitable on the WHOLE history AND the older 70% AND the recent 30% — no
+     window may lose money.
+  3. Profit factor > 1.3 on the whole history.
+- **Goal after rules pass:** highest return with the lowest drawdown; prefer lower drawdown.
+- **If nothing passes:** Codex must stop and report, not force a fake-good result.
+- Still 1h only; 15m/2h/4h untouched.
 
 <!-- Add your next entry above this line -->
