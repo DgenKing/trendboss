@@ -50,6 +50,7 @@ export type LiveState = {
   mode: 'PAPER' | 'TESTNET';
   tradeInterval: '5m';
   updatedAt: number | null;
+  heartbeat: LiveHeartbeat | null;
   equity: number;
   realizedBalance: number;
   usedMargin: number;
@@ -78,6 +79,22 @@ export type LiveState = {
     allocationPct: number;
     riskAtStop: number;
   }>;
+};
+
+export type LiveHeartbeat = {
+  time: number;
+  startedAt: number;
+  uptimeSeconds: number;
+  socketHealthy: boolean;
+  secondsSinceLastMessage: number | null;
+  closedCandlesByInterval: Record<string, number>;
+  lastClosedCandleByCoin: Record<string, number | null>;
+  signalsSeen: number;
+  openPositions: number;
+  lastAction: string;
+  feedPath: 'WS' | 'REST_POLL' | 'NONE';
+  rawChannels: Record<string, number>;
+  lastRawChannel: string | null;
 };
 
 export type LivePosition = {

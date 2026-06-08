@@ -1,18 +1,57 @@
 import { config } from '../../config';
 import type { Candle } from '../core/types';
-import { fetchCandles, HyperliquidSocket } from '../monitor/hyperliquid';
+import { fetchCandles, parseCandle } from '../monitor/hyperliquid';
 import type { TraderStore } from './store';
+import type { CandleFeedSource, LiveHeartbeat } from './types';
+
+type RawCandle = {
+  t: number;
+  T: number;
+  s: string;
+  i: string;
+  o: string | number;
+  c: string | number;
+  h: string | number;
+  l: string | number;
+  v: string | number;
+  n: number;
+};
 
 export type TraderFeedHandlers = {
-  onClosedCandle: (coin: string, interval: string, candle: Candle) => void | Promise<void>;
+  onClosedCandle: (
+    coin: string,
+    interval: string,
+    candle: Candle,
+    source: CandleFeedSource,
+  ) => void | Promise<void>;
   onCurrentPrice: (coin: string, price: number) => void;
-  onHealth: (healthy: boolean) => void;
+  onHealth: (heartbeat: LiveHeartbeat) => void;
   onLog?: (message: string) => void;
 };
 
 export class TraderFeed {
-  private socket: HyperliquidSocket | null = null;
+  private socket: WebSocket | null = null;
+  private reconnectTimer: Timer | null = null;
+  private staleTimer: Timer | null = null;
+  private restPollTimer: Timer | null = null;
   private nextRestRequestAt = 0;
+  private readonly startedAt = Date.now();
+  private readonly processed = new Set<string>();
+  private readonly closedCandlesByInterval = Object.fromEntries(
+    traderIntervals().map((interval) => [interval, 0]),
+  ) as Record<string, number>;
+  private readonly lastClosedCandleByCoin = Object.fromEntries(
+    config.trader.coins.map((coin) => [coin, null]),
+  ) as Record<string, number | null>;
+  private readonly rawChannels = new Map<string, number>();
+  private lastRawChannel: string | null = null;
+  private lastMessageAt: number | null = null;
+  private socketHealthy = false;
+  private reconnectAttempt = 0;
+  private staleReconnects = 0;
+  private wsPausedUntil = 0;
+  private lastCandleSource: CandleFeedSource | 'NONE' = 'NONE';
+  private polling = false;
 
   constructor(
     private readonly store: TraderStore,
@@ -28,20 +67,241 @@ export class TraderFeed {
   }
 
   start() {
-    this.socket = new HyperliquidSocket(
-      {
-        wsUrl: traderWsUrl(),
-        coins: [...config.trader.coins],
-        intervals: traderIntervals(),
-        staleSocketSeconds: config.staleSocketSeconds,
-      },
-      this.handlers,
-    );
-    this.socket.start();
+    this.connectSocket();
+    this.staleTimer = setInterval(() => this.reconnectIfStale(), 5_000);
+    this.startRestPolling();
+    this.emitHealth();
   }
 
   stop() {
-    this.socket?.stop();
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.staleTimer) clearInterval(this.staleTimer);
+    if (this.restPollTimer) clearInterval(this.restPollTimer);
+    this.socket?.close();
+  }
+
+  health(overrides: Partial<Pick<LiveHeartbeat, 'signalsSeen' | 'openPositions' | 'lastAction'>> = {}): LiveHeartbeat {
+    return {
+      time: Date.now(),
+      startedAt: this.startedAt,
+      uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
+      socketHealthy: this.socketHealthy,
+      secondsSinceLastMessage: this.lastMessageAt === null
+        ? null
+        : Math.floor((Date.now() - this.lastMessageAt) / 1000),
+      closedCandlesByInterval: { ...this.closedCandlesByInterval },
+      lastClosedCandleByCoin: { ...this.lastClosedCandleByCoin },
+      signalsSeen: overrides.signalsSeen ?? 0,
+      openPositions: overrides.openPositions ?? 0,
+      lastAction: overrides.lastAction ?? 'none',
+      feedPath: this.lastCandleSource,
+      rawChannels: Object.fromEntries(this.rawChannels),
+      lastRawChannel: this.lastRawChannel,
+    };
+  }
+
+  emitHealth(heartbeat?: LiveHeartbeat) {
+    this.handlers.onHealth(heartbeat ?? this.health());
+  }
+
+  private connectSocket() {
+    const now = Date.now();
+    if (now < this.wsPausedUntil) {
+      const seconds = Math.ceil((this.wsPausedUntil - now) / 1000);
+      this.handlers.onLog?.(`[trader] WebSocket reconnect paused for ${seconds}s; REST poll fallback is active`);
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.connectSocket();
+      }, this.wsPausedUntil - now);
+      return;
+    }
+
+    this.handlers.onLog?.(
+      `Opening Hyperliquid WebSocket for ${config.trader.coins.length} coins x ${traderIntervals().length} intervals`,
+    );
+    this.socket = new WebSocket(traderWsUrl());
+
+    this.socket.onopen = () => {
+      this.reconnectAttempt = 0;
+      this.lastMessageAt = Date.now();
+      this.socketHealthy = true;
+      this.emitHealth();
+      this.subscribeSocket();
+    };
+
+    this.socket.onmessage = (message) => {
+      this.lastMessageAt = Date.now();
+      this.socketHealthy = true;
+      this.handleSocketMessage(message.data);
+      this.emitHealth();
+    };
+
+    this.socket.onerror = () => {
+      this.socketHealthy = false;
+      this.emitHealth();
+    };
+
+    this.socket.onclose = () => {
+      this.socketHealthy = false;
+      this.emitHealth();
+      this.scheduleReconnect();
+    };
+  }
+
+  private subscribeSocket() {
+    for (const coin of config.trader.coins) {
+      for (const interval of traderIntervals()) {
+        this.sendSocket({
+          method: 'subscribe',
+          subscription: {
+            type: 'candle',
+            coin,
+            interval,
+          },
+        });
+      }
+    }
+    this.sendSocket({
+      method: 'subscribe',
+      subscription: { type: 'allMids' },
+    });
+  }
+
+  private sendSocket(payload: unknown) {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(payload));
+    }
+  }
+
+  private handleSocketMessage(data: string | ArrayBufferLike | Blob) {
+    if (typeof data !== 'string') return;
+    const message = JSON.parse(data) as { channel?: string; data?: unknown };
+    const channel = message.channel ?? 'unknown';
+    this.recordRawChannel(channel);
+
+    if (channel === 'candle') {
+      const raw = message.data as RawCandle;
+      this.handleClosedCandle(raw.s, raw.i, parseCandle(raw), 'WS');
+      return;
+    }
+
+    if (channel === 'allMids') {
+      const mids = (message.data as { mids?: Record<string, string | number> })?.mids;
+      if (!mids) return;
+      for (const coin of config.trader.coins) {
+        const raw = mids[coin];
+        if (raw !== undefined) this.handlers.onCurrentPrice(coin, toNumber(raw));
+      }
+    }
+  }
+
+  private recordRawChannel(channel: string) {
+    const count = (this.rawChannels.get(channel) ?? 0) + 1;
+    this.rawChannels.set(channel, count);
+    this.lastRawChannel = channel;
+    if (count <= 5 || count % 100 === 0) {
+      this.handlers.onLog?.(`[trader] WS channel ${channel} received (${count})`);
+    }
+  }
+
+  private reconnectIfStale() {
+    if (!this.socket || this.lastMessageAt === null) return;
+    if (Date.now() - this.lastMessageAt <= config.staleSocketSeconds * 1000) return;
+
+    this.staleReconnects += 1;
+    this.socketHealthy = false;
+    this.handlers.onLog?.(
+      `[trader] WebSocket stale: ${Math.floor((Date.now() - this.lastMessageAt) / 1000)}s since last message; REST poll fallback is active`,
+    );
+    if (this.staleReconnects >= 3) {
+      this.wsPausedUntil = Date.now() + 5 * 60 * 1000;
+      this.handlers.onLog?.('[trader] WebSocket stayed stale after 3 checks; pausing WS reconnects for 300s to stop reconnect spam');
+    }
+    this.emitHealth();
+    this.socket.close();
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectTimer) return;
+    const delay = Math.min(30_000, 1_000 * 2 ** this.reconnectAttempt);
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectSocket();
+    }, delay);
+  }
+
+  private startRestPolling() {
+    this.handlers.onLog?.(`[trader] REST poll fallback enabled every ${config.trader.heartbeatSeconds}s`);
+    void this.pollClosedCandles();
+    this.restPollTimer = setInterval(
+      () => void this.pollClosedCandles(),
+      config.trader.heartbeatSeconds * 1000,
+    );
+  }
+
+  private async pollClosedCandles() {
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      for (const interval of traderIntervals()) {
+        for (const coin of config.trader.coins) {
+          await this.pollClosedCandlesFor(coin, interval);
+        }
+      }
+    } finally {
+      this.polling = false;
+      this.emitHealth();
+    }
+  }
+
+  private async pollClosedCandlesFor(coin: string, interval: string) {
+    const intervalMs = intervalToMs(interval);
+    const endTime = Date.now();
+    const lastCandleTime = this.store.getLastCandleTime(coin, interval);
+    const startTime = lastCandleTime === null
+      ? endTime - 3 * intervalMs
+      : Math.max(0, lastCandleTime - intervalMs);
+    await this.waitForRestBudget(Math.max(1, Math.ceil((endTime - startTime) / intervalMs)));
+
+    try {
+      const candles = await fetchCandles({
+        restUrl: traderRestInfoUrl(),
+        coin,
+        interval,
+        startTime,
+        endTime,
+      });
+      if (candles.length > 0) this.store.saveCandles(coin, interval, candles);
+      for (const candle of candles) {
+        if (candle.closeTime <= Date.now()) {
+          this.handleClosedCandle(coin, interval, candle, 'REST_POLL');
+        }
+      }
+    } catch (error) {
+      this.handlers.onLog?.(
+        `[trader] REST poll failed for ${coin} ${interval}: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  private handleClosedCandle(coin: string, interval: string, candle: Candle, source: CandleFeedSource) {
+    const key = `${coin}:${interval}:${candle.openTime}`;
+    if (this.processed.has(key)) return;
+    this.processed.add(key);
+    if (this.processed.size > 10_000) {
+      const keep = [...this.processed].slice(-5_000);
+      this.processed.clear();
+      for (const item of keep) this.processed.add(item);
+    }
+
+    this.lastCandleSource = source;
+    this.closedCandlesByInterval[interval] = (this.closedCandlesByInterval[interval] ?? 0) + 1;
+    this.lastClosedCandleByCoin[coin] = Math.max(
+      this.lastClosedCandleByCoin[coin] ?? 0,
+      candle.closeTime,
+    );
+    void this.handlers.onClosedCandle(coin, interval, candle, source);
   }
 
   private async backfillInterval(coin: string, interval: string) {
@@ -101,6 +361,14 @@ export function intervalToMs(interval: string): number {
   if (match[2] === 'm') return value * 60 * 1000;
   if (match[2] === 'h') return value * 60 * 60 * 1000;
   return value * 24 * 60 * 60 * 1000;
+}
+
+function toNumber(value: string | number): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Expected numeric Hyperliquid value, received ${value}`);
+  }
+  return parsed;
 }
 
 function sleep(ms: number) {

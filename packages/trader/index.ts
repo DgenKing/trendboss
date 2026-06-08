@@ -9,7 +9,7 @@ import { calculateLiveAllocation } from './sizing';
 import { TraderFeed } from './feed';
 import { TraderStore } from './store';
 import { TestnetExecutor } from './testnet';
-import type { Executor, LiveDecision } from './types';
+import type { CandleFeedSource, Executor, LiveDecision, LiveHeartbeat } from './types';
 import { runPaperDemo } from './paper-demo';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -18,6 +18,8 @@ export class LiveTrader {
   private readonly engines = new Map<string, RegimeAwareStrategyEngine>();
   private readonly activeLevels = new Map<string, Levels>();
   private readonly recentEvents = new Map<string, MarketEvent[]>();
+  private signalsSeen = 0;
+  private lastAction = 'none';
 
   constructor(
     private readonly store: TraderStore,
@@ -35,8 +37,11 @@ export class LiveTrader {
     }
   }
 
-  async handleClosedCandle(coin: string, interval: string, candle: Candle) {
+  async handleClosedCandle(coin: string, interval: string, candle: Candle, source: CandleFeedSource = 'WS') {
     this.store.saveCandles(coin, interval, [candle]);
+    if (interval === config.trader.tradeInterval) {
+      this.lastAction = `none (${source} ${coin} ${interval} ${new Date(candle.closeTime).toISOString()})`;
+    }
     if (interval === '1d') {
       this.computeLevels(coin);
       return;
@@ -84,6 +89,10 @@ export class LiveTrader {
       },
     });
     this.rememberEvents(coin, [...update.events, ...update.signals]);
+    this.signalsSeen += update.signals.length;
+    if (update.signals.length > 0) {
+      this.lastAction = `signal ${coin} x${update.signals.length}`;
+    }
 
     for (const exit of update.exits) {
       const position = this.account.positions.get(coin);
@@ -101,6 +110,7 @@ export class LiveTrader {
       this.store.saveClosedTrade(result.closedTrade);
       if (result.fill) this.store.saveFill(result.fill);
       console.log(`[trader] closed ${coin} ${result.closedTrade.exitReason} pnl=${result.closedTrade.pnl.toFixed(2)}`);
+      this.lastAction = `exit ${coin} ${result.closedTrade.exitReason}`;
     }
 
     for (const signal of update.signals) {
@@ -136,6 +146,7 @@ export class LiveTrader {
       this.store.upsertPosition(result.position);
       if (result.fill) this.store.saveFill(result.fill);
       console.log(`[trader] opened ${coin} ${signal.direction} ${signal.strategy} margin=${allocation.margin.toFixed(2)}`);
+      this.lastAction = `entry ${coin} ${signal.direction} ${signal.strategy}`;
     }
 
     this.store.saveEquityPoint(this.account.equityPoint(candle.closeTime));
@@ -167,6 +178,14 @@ export class LiveTrader {
   private saveDecision(decision: LiveDecision) {
     this.store.saveDecision(decision);
   }
+
+  signalCount() {
+    return this.signalsSeen;
+  }
+
+  lastActionText() {
+    return this.lastAction;
+  }
 }
 
 export async function main() {
@@ -193,9 +212,9 @@ export async function main() {
     : new PaperExecutor();
   const trader = new LiveTrader(store, account, executor);
   const feed = new TraderFeed(store, {
-    onClosedCandle: (coin, interval, candle) => trader.handleClosedCandle(coin, interval, candle),
+    onClosedCandle: (coin, interval, candle, source) => trader.handleClosedCandle(coin, interval, candle, source),
     onCurrentPrice: (coin, price) => account.mark(coin, price),
-    onHealth: (healthy) => store.setMeta('socketHealthy', String(healthy)),
+    onHealth: (heartbeat) => store.saveHeartbeat(enrichedHeartbeat(heartbeat, trader, account)),
     onLog: (message) => console.log(message),
   });
 
@@ -204,12 +223,58 @@ export async function main() {
   scheduleUtcRolloverLog();
   feed.start();
   console.log(`[trader] ${config.trader.mode} loop running on 5m for ${config.trader.coins.join(', ')}`);
+  const heartbeatTimer = setInterval(() => {
+    const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
+    store.saveHeartbeat(heartbeat);
+    logHeartbeat(heartbeat);
+  }, config.trader.heartbeatSeconds * 1000);
+  const initialHeartbeat = enrichedHeartbeat(feed.health(), trader, account);
+  store.saveHeartbeat(initialHeartbeat);
+  logHeartbeat(initialHeartbeat);
 
   process.on('SIGINT', () => {
+    clearInterval(heartbeatTimer);
     feed.stop();
     store.close();
     process.exit(0);
   });
+}
+
+function enrichedHeartbeat(
+  heartbeat: LiveHeartbeat,
+  trader: LiveTrader,
+  account: TraderAccount,
+): LiveHeartbeat {
+  return {
+    ...heartbeat,
+    signalsSeen: trader.signalCount(),
+    openPositions: account.positions.size,
+    lastAction: trader.lastActionText(),
+  };
+}
+
+function logHeartbeat(heartbeat: LiveHeartbeat) {
+  const since = heartbeat.secondsSinceLastMessage === null
+    ? 'never'
+    : `${heartbeat.secondsSinceLastMessage}s ago`;
+  const counters = Object.entries(heartbeat.closedCandlesByInterval)
+    .map(([interval, count]) => `${interval}=${count}`)
+    .join(' ');
+  const lastClosed = Object.entries(heartbeat.lastClosedCandleByCoin)
+    .map(([coin, time]) => `${coin}:${time ? formatHeartbeatTimestamp(time) : '--'}`)
+    .join(' ');
+  console.log(
+    `[heartbeat] now=${new Date(heartbeat.time).toISOString()} uptime=${heartbeat.uptimeSeconds}s socket=${
+      heartbeat.socketHealthy ? 'healthy' : 'stale'
+    } lastMsg=${since} feed=${heartbeat.feedPath} candles{${counters}} signals=${
+      heartbeat.signalsSeen
+    } open=${heartbeat.openPositions} lastAction=${heartbeat.lastAction}`,
+  );
+  console.log(`[heartbeat] lastClosed ${lastClosed}`);
+}
+
+function formatHeartbeatTimestamp(timestamp: number) {
+  return new Date(timestamp).toISOString().slice(5, 16).replace('T', ' ');
 }
 
 function logTraderCoinSelection() {

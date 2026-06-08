@@ -379,4 +379,41 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
   `11 coins x 3 intervals` without coin-selection crashes. TESTNET has sparse candle history for
   some listed markets (notably `ZEC`), but those returned cleanly.
 
+### 2026-06-08 — Tasked Codex with a trader heartbeat + feed health (diagnostics)
+- **Why:** running the testnet trader gives no feedback for hours, so there's no way to tell if
+  it's alive or stuck. The terminal also shows the WebSocket re-opening repeatedly ("Opening
+  Hyperliquid WebSocket ..."), i.e. it keeps going STALE (no messages for `staleSocketSeconds`)
+  and reconnecting — a sign the testnet feed may not be delivering candles, so no trades fire.
+- **Add a heartbeat (every ~60s)** to BOTH the terminal and the web Live panel showing: uptime,
+  socket healthy/stale + last-message age, total closed candles received (and per-interval, e.g.
+  5m), last closed-candle time per coin, signals seen, open positions, last action taken.
+- **Surface feed health on `/api/live`** so the dashboard shows "last heartbeat", socket status,
+  and candles-received counters — not just positions.
+- **Investigate the reconnect loop:** confirm whether the testnet WS candle subscription actually
+  pushes data; if testnet doesn't stream candles reliably, add a REST poll fallback for closed
+  candles so the loop still works. Log clearly which path is feeding candles.
+- **Scope:** trader + its dashboard panel only; do not touch strategy/tuning/monitor/backtest.
+- **Status:** handed to Codex on `paper-trade`.
+
+### 2026-06-08 — Implemented trader heartbeat and REST feed fallback
+- **Heartbeat:** trader now emits a terminal heartbeat every `config.trader.heartbeatSeconds`
+  (default `60`) and persists the latest heartbeat to `/api/live`. It includes uptime/current
+  time, socket health, seconds since last WS message, closed-candle counters by interval,
+  last closed-candle timestamp per coin, signals seen, open positions, last action, feed path,
+  and raw WS channel counts.
+- **Live panel:** "Live (Paper/Testnet)" now shows an `alive/stale` line, last heartbeat age,
+  socket `OK/STALE`, candle counters, feed path, uptime, signals, last action, and per-coin last
+  closed-candle timestamps.
+- **Feed diagnostics:** TESTNET startup now logs raw incoming WS channels. In the verification run,
+  TESTNET did emit `subscriptionResponse`, `allMids`, and `candle` channels, so candle streaming
+  works at least intermittently.
+- **Fallback:** trader now runs an always-on REST polling fallback through the same closed-candle
+  path as WS. This keeps the live loop moving if TESTNET WS goes stale or candle delivery is
+  unreliable. The fallback respects the existing REST budget spacing and logs poll failures per
+  coin/interval instead of crashing.
+- **Reconnect spam:** if the WS stays stale repeatedly, the trader pauses WS reconnects for
+  300s and continues via REST poll, preventing endless "Opening Hyperliquid WebSocket..." spam.
+- **Verification:** TESTNET heartbeat showed non-zero counters (`5m=19`, `1h=15`, `1d=15` after
+  the first poll cycle) with `socket=healthy`, `lastMsg=0s`, and `feed=REST_POLL`.
+
 <!-- Add your next entry above this line -->

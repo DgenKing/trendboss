@@ -401,6 +401,13 @@ function LivePanel({ state, error }: { state: LiveState | null; error: string | 
     return <section className="mt-4 border border-line bg-surface px-5 py-4 text-sm text-muted">Loading live state...</section>;
   }
   const tone = state.mode === 'TESTNET' ? 'text-warning' : 'text-positive';
+  const heartbeat = state.heartbeat;
+  const heartbeatAge = heartbeat ? Math.max(0, Math.floor((Date.now() - heartbeat.time) / 1000)) : null;
+  const alive = heartbeatAge !== null && heartbeatAge <= 90;
+  const socketLabel = heartbeat?.socketHealthy ? 'OK' : 'STALE';
+  const candleCounters = heartbeat
+    ? Object.entries(heartbeat.closedCandlesByInterval).map(([interval, count]) => `${interval} ${count}`).join(' · ')
+    : '5m 0 · 1h 0 · 1d 0';
   return (
     <section className="mt-4 border border-line bg-surface">
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-line px-5 py-4">
@@ -414,13 +421,33 @@ function LivePanel({ state, error }: { state: LiveState | null; error: string | 
           <div className="mt-1 text-xs text-muted">
             {state.enabled ? `5m loop · updated ${formatTimes(state.updatedAt)}` : 'disabled by default'}
           </div>
+          <div className="mt-2 text-sm font-medium">
+            <span className={alive ? 'text-positive' : 'text-negative'}>{alive ? 'alive' : 'stale'}</span>
+            <span className="text-muted"> · last heartbeat {heartbeatAge === null ? 'never' : `${heartbeatAge}s ago`} · socket {socketLabel}</span>
+          </div>
+          <div className="mt-1 text-xs text-muted">
+            candles {candleCounters} · feed {heartbeat?.feedPath ?? 'NONE'} · last msg {heartbeat?.secondsSinceLastMessage === null || heartbeat?.secondsSinceLastMessage === undefined ? 'never' : `${heartbeat.secondsSinceLastMessage}s ago`}
+          </div>
         </div>
         <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-sm">
           <MetricLite label="Open" value={String(state.openPositions.length)} />
           <MetricLite label="Used margin" value={formatUsd(state.usedMargin)} />
           <MetricLite label="Closed" value={String(state.closedTrades.length)} />
+          <MetricLite label="Signals" value={String(heartbeat?.signalsSeen ?? 0)} />
+          <MetricLite label="Uptime" value={heartbeat ? formatDuration(heartbeat.uptimeSeconds) : '--'} />
+          <MetricLite label="Last action" value={heartbeat?.lastAction ?? 'none'} />
         </div>
       </header>
+      {heartbeat ? (
+        <div className="border-b border-line px-4 py-3 text-xs text-muted">
+          <span className="font-semibold text-ink">Last closed candles</span>
+          <span className="ml-2">
+            {Object.entries(heartbeat.lastClosedCandleByCoin)
+              .map(([coin, time]) => `${displayCoin(coin)} ${time ? formatShortDate(time) : '--'}`)
+              .join(' · ')}
+          </span>
+        </div>
+      ) : null}
       <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,.6fr)]">
         <div className="min-w-0 border border-line bg-surface2">
           <div className="border-b border-line px-3 py-2 font-semibold">Open positions</div>
@@ -893,6 +920,15 @@ function formatUsd(value: number) {
 function formatSignedUsd(value: number) {
   const sign = value > 0 ? '+' : '';
   return `${sign}${formatUsd(value)}`;
+}
+
+function formatDuration(seconds: number) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remaining}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }
 
 function formatUtcDateTime(timestamp: number) {

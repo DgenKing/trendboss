@@ -290,6 +290,7 @@ export const config = {
     testnetRestUrl: 'https://api.hyperliquid-testnet.xyz',
     testnetWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
     maxOpenPositions: 10,
+    heartbeatSeconds: 60,
     dbPath: process.env.TRADER_DB_PATH ?? 'data/trader.db',
   },
   staleSocketSeconds: 90,

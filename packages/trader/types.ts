@@ -82,11 +82,30 @@ export interface EquityPoint {
   activePositions: number;
 }
 
+export type CandleFeedSource = 'WS' | 'REST_POLL';
+
+export interface LiveHeartbeat {
+  time: number;
+  startedAt: number;
+  uptimeSeconds: number;
+  socketHealthy: boolean;
+  secondsSinceLastMessage: number | null;
+  closedCandlesByInterval: Record<string, number>;
+  lastClosedCandleByCoin: Record<string, number | null>;
+  signalsSeen: number;
+  openPositions: number;
+  lastAction: string;
+  feedPath: CandleFeedSource | 'NONE';
+  rawChannels: Record<string, number>;
+  lastRawChannel: string | null;
+}
+
 export interface LiveState {
   enabled: boolean;
   mode: TraderMode;
   tradeInterval: '5m';
   updatedAt: number | null;
+  heartbeat: LiveHeartbeat | null;
   equity: number;
   realizedBalance: number;
   usedMargin: number;

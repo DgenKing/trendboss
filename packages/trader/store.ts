@@ -6,6 +6,7 @@ import type {
   LiveClosedTrade,
   LiveDecision,
   LiveFill,
+  LiveHeartbeat,
   LivePosition,
   LiveState,
 } from './types';
@@ -186,6 +187,15 @@ export class TraderStore {
     `).run(key, value);
   }
 
+  getMeta(key: string): string | null {
+    const row = this.db.query('SELECT value FROM live_meta WHERE key = ?').get(key) as { value: string } | null;
+    return row?.value ?? null;
+  }
+
+  saveHeartbeat(heartbeat: LiveHeartbeat) {
+    this.setMeta('heartbeat', JSON.stringify(heartbeat));
+  }
+
   getOpenPositions(): LivePosition[] {
     return this.db.query(`
       SELECT coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
@@ -212,6 +222,7 @@ export class TraderStore {
       mode: config.trader.mode,
       tradeInterval: config.trader.tradeInterval,
       updatedAt: latest?.time ?? null,
+      heartbeat: this.getHeartbeat(),
       equity: latest?.equity ?? config.portfolio.startingCapital,
       realizedBalance: latest?.realizedBalance ?? config.portfolio.startingCapital,
       usedMargin: latest?.usedMargin ?? 0,
@@ -360,6 +371,16 @@ export class TraderStore {
         value TEXT
       );
     `);
+  }
+
+  private getHeartbeat(): LiveHeartbeat | null {
+    const raw = this.getMeta('heartbeat');
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as LiveHeartbeat;
+    } catch {
+      return null;
+    }
   }
 }
 
