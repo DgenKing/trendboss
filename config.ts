@@ -52,6 +52,35 @@ export type TraderMode = 'PAPER' | 'TESTNET';
 const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
 const traderMode = process.env.TRADER_MODE === 'TESTNET' ? 'TESTNET' : 'PAPER';
 const traderEnabled = process.env.TRADER_ENABLED === 'true';
+const TESTNET_SUPPORTED_TRADER_COINS = [
+  'BTC', 'ETH', 'SOL', 'BNB', 'HYPE', 'ZEC',
+  'NEAR', 'WLD', 'TON', 'SUI', 'DOGE',
+] as const;
+const testnetSupportedTraderCoins = new Set<string>(TESTNET_SUPPORTED_TRADER_COINS);
+const traderCoinSelection = coins.map((coin) => {
+  if (coin.includes(':')) {
+    return {
+      coin,
+      included: false,
+      reason: 'HIP-3 dex market is not supported by the TESTNET executor',
+    };
+  }
+  if (!testnetSupportedTraderCoins.has(coin)) {
+    return {
+      coin,
+      included: false,
+      reason: 'not listed in Hyperliquid TESTNET meta universe queried 2026-06-08',
+    };
+  }
+  return {
+    coin,
+    included: true,
+    reason: 'plain perp listed in Hyperliquid TESTNET meta universe',
+  };
+});
+const traderCoins = traderCoinSelection
+  .filter((item) => item.included)
+  .map((item) => item.coin);
 const regimeForTrade = {
   '5m': '1h',
   '15m': '1h',
@@ -256,10 +285,11 @@ export const config = {
     enabled: traderEnabled,
     mode: traderMode as TraderMode,
     tradeInterval: '5m' as const,
-    coins: coins.slice(0, 4),
+    coins: traderCoins,
+    coinSelection: traderCoinSelection,
     testnetRestUrl: 'https://api.hyperliquid-testnet.xyz',
     testnetWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
-    maxOpenPositions: 4,
+    maxOpenPositions: 10,
     dbPath: process.env.TRADER_DB_PATH ?? 'data/trader.db',
   },
   staleSocketSeconds: 90,

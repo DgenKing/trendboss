@@ -177,6 +177,7 @@ export async function main() {
   if (config.trader.tradeInterval !== '5m') {
     throw new Error('Trader supports 5m only.');
   }
+  logTraderCoinSelection();
   if (!config.trader.enabled) {
     console.log('[trader] disabled by config.trader.enabled=false; no live loop started.');
     return;
@@ -209,6 +210,20 @@ export async function main() {
     store.close();
     process.exit(0);
   });
+}
+
+function logTraderCoinSelection() {
+  const included = config.trader.coinSelection.filter((item) => item.included);
+  const skipped = config.trader.coinSelection.filter((item) => !item.included);
+  console.log(`[trader] included coins (${included.length}): ${included.map((item) => item.coin).join(', ') || 'none'}`);
+  if (skipped.length === 0) {
+    console.log('[trader] skipped coins: none');
+    return;
+  }
+  console.log(`[trader] skipped coins (${skipped.length}):`);
+  for (const item of skipped) {
+    console.log(`[trader] - ${item.coin}: ${item.reason}`);
+  }
 }
 
 function decisionFromSignal(

@@ -215,8 +215,7 @@ export class TestnetExecutor implements Executor {
   }
 }
 
-export async function loadTestnetSecret(): Promise<TestnetSecret> {
-  const secretPath = new URL('../../trader.secret.ts', import.meta.url).pathname;
+export async function loadTestnetSecret(secretPath = new URL('../../trader.secret.ts', import.meta.url).pathname): Promise<TestnetSecret> {
   try {
     return await import(secretPath) as TestnetSecret;
   } catch (error) {

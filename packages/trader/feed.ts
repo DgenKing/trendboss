@@ -30,7 +30,7 @@ export class TraderFeed {
   start() {
     this.socket = new HyperliquidSocket(
       {
-        wsUrl: config.wsUrl,
+        wsUrl: traderWsUrl(),
         coins: [...config.trader.coins],
         intervals: traderIntervals(),
         staleSocketSeconds: config.staleSocketSeconds,
@@ -56,7 +56,7 @@ export class TraderFeed {
     const estimatedCandles = Math.min(target + 1, Math.max(1, Math.ceil((endTime - startTime) / intervalMs)));
     await this.waitForRestBudget(estimatedCandles);
     const candles = await fetchCandles({
-      restUrl: config.restUrl,
+      restUrl: traderRestInfoUrl(),
       coin,
       interval,
       startTime,
@@ -83,6 +83,15 @@ export class TraderFeed {
 
 export function traderIntervals(): string[] {
   return [config.trader.tradeInterval, config.regimeForTrade[config.trader.tradeInterval], '1d'];
+}
+
+function traderRestInfoUrl(): string {
+  if (config.trader.mode !== 'TESTNET') return config.restUrl;
+  return `${config.trader.testnetRestUrl.replace(/\/$/, '')}/info`;
+}
+
+function traderWsUrl(): string {
+  return config.trader.mode === 'TESTNET' ? config.trader.testnetWsUrl : config.wsUrl;
 }
 
 export function intervalToMs(interval: string): number {

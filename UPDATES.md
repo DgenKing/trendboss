@@ -352,4 +352,31 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
   panel showing mode, not-real-money status, equity, positions, and recent live trades.
 - **Docs:** manual testnet setup lives in `docs/trader-testnet-setup.md`.
 
+### 2026-06-08 — Tasked Codex with widening trader coins (more trades to observe)
+- **Why:** 5m backtest did ~130 trades / 17 days ≈ 7.6/day across ~12 coins (~0.6/coin/day).
+  The trader only trades the first 4 coins (`coins.slice(0,4)`), so ~2–3 trades/day — too few to
+  watch it actually work. Widen the trader's coin list to get back near ~7 trades/day.
+- **Scope:** only the trader's coin selection + position cap. Do NOT touch the strategy, tuning,
+  monitor, backtest, or the 5m-only rule.
+- **Hard requirement (testnet reality):** Hyperliquid TESTNET lists fewer markets than mainnet.
+  Codex must query the testnet `meta` universe and include ONLY plain perps that actually exist on
+  testnet; skip any that don't, and keep skipping `xyz:` HIP-3 markets. Log which coins were
+  included vs skipped.
+- **Also:** raise `maxOpenPositions` to match the wider list (e.g. ~8–10) so trades aren't starved.
+- **Status:** handed to Codex on the `paper-trade` branch.
+
+### 2026-06-08 — Widened trader coin set for TESTNET-supported plain perps
+- **Queried:** Hyperliquid TESTNET `meta` universe (`https://api.hyperliquid-testnet.xyz/info`)
+  on 2026-06-08 and intersected it with our configured plain perps.
+- **Included trader coins:** `BTC`, `ETH`, `SOL`, `BNB`, `HYPE`, `ZEC`, `NEAR`, `WLD`, `TON`,
+  `SUI`, `DOGE`.
+- **Skipped:** `XRP` (not listed in TESTNET `meta`), `xyz:XYZ100` and `xyz:SP500` (HIP-3
+  `dex:ASSET` markets still refused by the TESTNET executor).
+- **Position cap:** raised `config.trader.maxOpenPositions` from `4` to `10`.
+- **Startup visibility:** trader now logs included coins and skipped coins with reasons before
+  starting or no-oping.
+- **Smoke test:** TESTNET startup backfilled the 11-coin set and opened the WebSocket for
+  `11 coins x 3 intervals` without coin-selection crashes. TESTNET has sparse candle history for
+  some listed markets (notably `ZEC`), but those returned cleanly.
+
 <!-- Add your next entry above this line -->

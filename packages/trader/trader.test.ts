@@ -15,7 +15,8 @@ describe('trader config safety', () => {
   });
 
   test('TESTNET refuses to start without the gitignored secret', async () => {
-    await expect(loadTestnetSecret()).rejects.toThrow('trader.secret.ts');
+    const missingSecret = new URL('../../trader.secret.missing.ts', import.meta.url).pathname;
+    await expect(loadTestnetSecret(missingSecret)).rejects.toThrow('trader.secret.ts');
   });
 });
 
