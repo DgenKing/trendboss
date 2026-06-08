@@ -310,4 +310,46 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 - **Honest expectation:** 5m has only ~17 days of history and heavy fee drag, so it may NOT pass.
   If nothing passes, Codex must STOP and report "no settings work" — do not force a fake result.
 
+### 2026-06-07 — Spec'd paper + testnet live trading (5m) for Codex
+- **Decision:** add a live execution loop that acts on the strategy's signals in real time —
+  first PAPER (simulated fills, no keys, no risk), then live on the Hyperliquid TESTNET (real
+  signed orders, fake money). 5m timeframe only for this first version. New `paper-trade` branch.
+- **Architecture:** new `packages/trader` package, its own process (`bun run trader`), built
+  SEPARATE from the monitor so the proven monitor/backtest/portfolio/dashboard stay untouched.
+  It REUSES `packages/core` (same `RegimeAwareStrategyEngine` + `calculatePortfolioAllocation`)
+  so live behaviour matches the backtest. One `Executor` interface, two implementations
+  (PaperExecutor / TestnetExecutor) chosen by a mode flag.
+- **Researched (2026-06-07):** testnet URLs `api.hyperliquid-testnet.xyz` (REST/WS); no API
+  keys — orders signed with an agent/API wallet private key (EIP-712); fund via mainnet deposit
+  + testnet faucet; use the `nomeida/hyperliquid` TS SDK (Bun, testnet flag, market/limit/tp-sl
+  triggers, account state); price/size rounding (sig figs + szDecimals) is the main gotcha.
+- **Realistic cost model for PAPER:** uses the REAL Hyperliquid taker fee (0.045%/4.5 bps per
+  side, on notional — strategy uses market + trigger-market orders), 1.5 bps slippage, and
+  hourly funding on held positions. This differs from the backtest's simplified 3.5 bps/no-funding
+  assumption on purpose; the backtest is left unchanged so tuned results don't move.
+- **Safety rules recorded:** default `enabled:false`, default `mode:'PAPER'`; NO mainnet/real
+  money; NO withdrawals; hard caps on positions; testnet key in a gitignored `trader.secret.ts`
+  (no dotenv, hardcoded locally, never committed).
+- **Wrote for Codex to implement:**
+  - Spec: `docs/superpowers/specs/2026-06-07-paper-and-testnet-trading-design.md`
+  - Plan: `docs/superpowers/plans/2026-06-07-paper-and-testnet-trading.md`
+- **Status:** spec + plan written; implementation NOT started. Manual user setup (agent wallet,
+  faucet, secret file) still required before TESTNET mode can run.
+
+### 2026-06-08 — Implemented additive PAPER/TESTNET trader package
+- **Added:** `packages/trader` as its own process (`bun run trader`) with isolated SQLite state
+  in `data/trader.db`, default `enabled:false`, default `mode:'PAPER'`, and 5m-only live loop
+  using `config.tuning['5m']`.
+- **Reused core:** live decisions call the same `RegimeAwareStrategyEngine` and delegate sizing
+  directly to `calculatePortfolioAllocation`; focused tests cover that delegate, PAPER fills,
+  disabled no-op startup, TESTNET secret fail-fast, and TESTNET rounding helpers.
+- **Executors:** PAPER simulates backtest-style fills with the existing 1.5 bps slippage and
+  3.5 bps fee assumptions. TESTNET uses `hyperliquid` SDK with `testnet:true`, isolated 5x,
+  IOC entries, reduce-only TP/SL trigger orders, full response checks, and no retry loop.
+- **Safety:** no mainnet mode, no withdrawal calls, no committed key; `trader.secret.ts` is
+  gitignored and `trader.secret.example.ts` documents the local secret shape.
+- **Dashboard/API:** added read-only `/api/live` and a clearly labeled "Live (Paper/Testnet)"
+  panel showing mode, not-real-money status, equity, positions, and recent live trades.
+- **Docs:** manual testnet setup lives in `docs/trader-testnet-setup.md`.
+
 <!-- Add your next entry above this line -->

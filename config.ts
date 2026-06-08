@@ -47,7 +47,11 @@ export type IntervalTuning = {
   };
 };
 
+export type TraderMode = 'PAPER' | 'TESTNET';
+
 const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
+const traderMode = process.env.TRADER_MODE === 'TESTNET' ? 'TESTNET' : 'PAPER';
+const traderEnabled = process.env.TRADER_ENABLED === 'true';
 const regimeForTrade = {
   '5m': '1h',
   '15m': '1h',
@@ -247,6 +251,16 @@ export const config = {
     maxPositionMargin: 0.25,
     maxTotalMargin: 1,
     cacheMs: 60_000,
+  },
+  trader: {
+    enabled: traderEnabled,
+    mode: traderMode as TraderMode,
+    tradeInterval: '5m' as const,
+    coins: coins.slice(0, 4),
+    testnetRestUrl: 'https://api.hyperliquid-testnet.xyz',
+    testnetWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
+    maxOpenPositions: 4,
+    dbPath: process.env.TRADER_DB_PATH ?? 'data/trader.db',
   },
   staleSocketSeconds: 90,
   apiPort: Number(process.env.API_PORT ?? 8787),

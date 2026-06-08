@@ -9,10 +9,12 @@ import {
   getCoins,
   getDashboardData,
   getIntervals,
+  getLiveState,
   getPortfolio,
   getTradeIntervals,
   type Candle,
   type Levels,
+  type LiveState,
   type MarketEvent,
   type Status,
 } from '../lib/api';
@@ -59,6 +61,13 @@ type PortfolioLoadState = {
 
 const emptyPortfolio: PortfolioLoadState = { result: null, loading: false, error: null };
 
+type LiveLoadState = {
+  result: LiveState | null;
+  error: string | null;
+};
+
+const emptyLive: LiveLoadState = { result: null, error: null };
+
 const BACKTEST_REFRESH_MS = 60_000;
 const DEFAULT_TRADE_INTERVALS = ['5m', '15m', '1h', '2h', '4h'];
 const REGIME_BY_TRADE: Record<string, string> = {
@@ -89,6 +98,7 @@ export default function Page() {
   const [theme, setTheme] = useState<Theme>('light');
   const [backtest, setBacktest] = useState<BacktestLoadState>(emptyBacktest);
   const [portfolio, setPortfolio] = useState<PortfolioLoadState>(emptyPortfolio);
+  const [live, setLive] = useState<LiveLoadState>(emptyLive);
 
   // Load the saved theme once, then keep <html data-theme> and localStorage in sync.
   useEffect(() => {
@@ -257,6 +267,24 @@ export default function Page() {
     };
   }, [activeTradeInterval]);
 
+  useEffect(() => {
+    let alive = true;
+    async function loadLive() {
+      try {
+        const result = await getLiveState();
+        if (alive) setLive({ result, error: null });
+      } catch (caught) {
+        if (alive) setLive({ result: null, error: caught instanceof Error ? caught.message : 'Live state unavailable' });
+      }
+    }
+    void loadLive();
+    const interval = setInterval(loadLive, 5_000);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   const latestClose = data.candles.at(-1)?.close ?? null;
   const price = data.status?.currentPrice ?? latestClose;
   const portfolioEquity = portfolio.result?.summary.finalEquity ?? null;
@@ -315,6 +343,7 @@ export default function Page() {
             theme={theme}
             tradeInterval={activeTradeInterval}
           />
+          <LivePanel state={live.result} error={live.error} />
         </div>
       ) : (
       <div className="mx-auto grid max-w-[1600px] gap-4 px-5 py-5 xl:grid-cols-[minmax(0,1fr)_390px]">
@@ -362,6 +391,86 @@ export default function Page() {
       )}
     </main>
   );
+}
+
+function LivePanel({ state, error }: { state: LiveState | null; error: string | null }) {
+  if (error) {
+    return <section className="mt-4 border border-line bg-surface px-5 py-4 text-sm text-muted">Live state unavailable</section>;
+  }
+  if (!state) {
+    return <section className="mt-4 border border-line bg-surface px-5 py-4 text-sm text-muted">Loading live state...</section>;
+  }
+  const tone = state.mode === 'TESTNET' ? 'text-warning' : 'text-positive';
+  return (
+    <section className="mt-4 border border-line bg-surface">
+      <header className="flex flex-wrap items-end justify-between gap-4 border-b border-line px-5 py-4">
+        <div>
+          <div className="text-xs uppercase text-muted">Live (Paper/Testnet)</div>
+          <div className="mt-1 flex flex-wrap items-baseline gap-3">
+            <h2 className="text-2xl font-semibold">{formatUsd(state.equity)}</h2>
+            <span className={`font-semibold ${tone}`}>{state.mode}</span>
+            <span className="text-sm text-muted">not real money</span>
+          </div>
+          <div className="mt-1 text-xs text-muted">
+            {state.enabled ? `5m loop · updated ${formatTimes(state.updatedAt)}` : 'disabled by default'}
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-sm">
+          <MetricLite label="Open" value={String(state.openPositions.length)} />
+          <MetricLite label="Used margin" value={formatUsd(state.usedMargin)} />
+          <MetricLite label="Closed" value={String(state.closedTrades.length)} />
+        </div>
+      </header>
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,.6fr)]">
+        <div className="min-w-0 border border-line bg-surface2">
+          <div className="border-b border-line px-3 py-2 font-semibold">Open positions</div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="text-xs uppercase text-muted">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Market</th>
+                  <th className="px-3 py-2 font-medium">Entry</th>
+                  <th className="px-3 py-2 font-medium">Stop</th>
+                  <th className="px-3 py-2 font-medium">Target</th>
+                  <th className="px-3 py-2 font-medium">PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.openPositions.map((position) => (
+                  <tr key={position.coin} className="border-t border-line">
+                    <td className="whitespace-nowrap px-3 py-2 font-semibold">{displayCoin(position.coin)} {position.direction}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{formatPrice(position.entry)}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{formatPrice(position.stop)}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{formatPrice(position.target)}</td>
+                    <td className={position.unrealizedPnl >= 0 ? 'whitespace-nowrap px-3 py-2 text-positive' : 'whitespace-nowrap px-3 py-2 text-negative'}>
+                      {formatSignedUsd(position.unrealizedPnl)}
+                    </td>
+                  </tr>
+                ))}
+                {state.openPositions.length === 0 ? (
+                  <tr><td colSpan={5} className="px-3 py-6 text-muted">No live positions.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="border border-line bg-surface2">
+          <div className="border-b border-line px-3 py-2 font-semibold">Recent live trades</div>
+          {state.closedTrades.slice(0, 6).map((trade) => (
+            <div key={`${trade.coin}-${trade.exitTime}`} className="flex items-center justify-between gap-3 border-b border-line px-3 py-2 text-sm">
+              <span>{displayCoin(trade.coin)} {trade.exitReason}</span>
+              <span className={trade.pnl >= 0 ? 'text-positive' : 'text-negative'}>{formatSignedUsd(trade.pnl)}</span>
+            </div>
+          ))}
+          {state.closedTrades.length === 0 ? <div className="px-3 py-6 text-sm text-muted">No closed live trades.</div> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MetricLite({ label, value }: { label: string; value: string }) {
+  return <div><div className="text-xs uppercase text-muted">{label}</div><div className="font-semibold">{value}</div></div>;
 }
 
 function CoinSelector({
@@ -779,6 +888,11 @@ function formatPrice(value: number | undefined) {
 
 function formatUsd(value: number) {
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+}
+
+function formatSignedUsd(value: number) {
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${formatUsd(value)}`;
 }
 
 function formatUtcDateTime(timestamp: number) {

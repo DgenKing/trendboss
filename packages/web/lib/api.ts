@@ -45,6 +45,69 @@ export type Status = {
   currentPrice: number | null;
 };
 
+export type LiveState = {
+  enabled: boolean;
+  mode: 'PAPER' | 'TESTNET';
+  tradeInterval: '5m';
+  updatedAt: number | null;
+  equity: number;
+  realizedBalance: number;
+  usedMargin: number;
+  openPositions: LivePosition[];
+  closedTrades: LiveClosedTrade[];
+  equityPoints: Array<{
+    time: number;
+    mode: 'PAPER' | 'TESTNET';
+    equity: number;
+    realizedBalance: number;
+    usedMargin: number;
+    activePositions: number;
+  }>;
+  recentDecisions: Array<{
+    id?: number;
+    coin: string;
+    time: number;
+    mode: 'PAPER' | 'TESTNET';
+    direction: 'LONG' | 'SHORT';
+    strategy: string;
+    score: number;
+    status: string;
+    reason: string;
+    margin: number;
+    notional: number;
+    allocationPct: number;
+    riskAtStop: number;
+  }>;
+};
+
+export type LivePosition = {
+  coin: string;
+  mode: 'PAPER' | 'TESTNET';
+  direction: 'LONG' | 'SHORT';
+  strategy: string;
+  regime: string;
+  entryTime: number;
+  entry: number;
+  stop: number;
+  target: number;
+  score: number;
+  margin: number;
+  notional: number;
+  allocationPct: number;
+  riskAtStop: number;
+  quantity: number;
+  currentPrice: number;
+  unrealizedPnl: number;
+};
+
+export type LiveClosedTrade = LivePosition & {
+  exitTime: number;
+  exitPrice: number;
+  exitReason: string;
+  pnl: number;
+  returnOnMargin: number;
+};
+
 const API_BASE = process.env.NEXT_PUBLIC_MONITOR_API ?? 'http://localhost:8787';
 export const CHART_CANDLE_LIMIT = 5000;
 
@@ -67,6 +130,10 @@ export async function getPortfolio(interval: string): Promise<PortfolioResult> {
 export async function getBacktest(coin: string, interval: string): Promise<BacktestResult> {
   const q = `coin=${encodeURIComponent(coin)}&interval=${encodeURIComponent(interval)}`;
   return fetchJson<BacktestResult>(`/api/backtest?${q}`);
+}
+
+export async function getLiveState(): Promise<LiveState> {
+  return fetchJson<LiveState>('/api/live');
 }
 
 export async function getDashboardData(coin: string, interval: string) {

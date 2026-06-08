@@ -1,6 +1,7 @@
 import { config, tuningFor, type TradeInterval } from '../../config';
 import { runBacktest, type BacktestResult } from '../core/backtest';
 import { runPortfolioBacktest, type PortfolioResult } from '../core/portfolio';
+import { TraderStore } from '../trader/store';
 import type { Store } from './store';
 
 export type MonitorStatus = {
@@ -12,6 +13,7 @@ export type MonitorStatus = {
 export function startApi(store: Store, status: MonitorStatus) {
   const portfolioCache = createIntervalResultCache<PortfolioResult>();
   const backtestCache = new Map<string, IntervalCacheEntry<BacktestResult>>();
+  let liveStore: TraderStore | null = null;
   const resolveCoin = (url: URL): string => {
     const requested = url.searchParams.get('coin');
     if (requested) {
@@ -78,6 +80,11 @@ export function startApi(store: Store, status: MonitorStatus) {
           () => buildBacktest(store, coin, interval),
         );
         return json(result);
+      }
+
+      if (url.pathname === '/api/live') {
+        liveStore ??= new TraderStore();
+        return json(liveStore.getLiveState());
       }
 
       if (url.pathname === '/api/levels') {
@@ -221,6 +228,7 @@ function apiIndex(status: MonitorStatus) {
         <li><a href="/api/trade-intervals"><code>/api/trade-intervals</code></a></li>
         <li><a href="/api/portfolio"><code>/api/portfolio</code></a></li>
         <li><a href="/api/backtest?coin=${encodeURIComponent(status.coins[0] ?? '')}&interval=15m"><code>/api/backtest?coin=…&interval=15m</code></a></li>
+        <li><a href="/api/live"><code>/api/live</code></a></li>
         <li><a href="/api/status?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/status?coin=…</code></a></li>
         <li><a href="/api/levels?coin=${encodeURIComponent(status.coins[0] ?? '')}"><code>/api/levels?coin=…</code></a></li>
         <li><a href="/api/candles?coin=${encodeURIComponent(status.coins[0] ?? '')}&interval=15m&limit=1500"><code>/api/candles?coin=…&interval=15m&limit=1500</code></a></li>
