@@ -225,6 +225,10 @@ export class LiveTrader {
     console.error(`[trader] ${message}`);
   }
 
+  recordExternalError(message: string) {
+    this.recordError(message);
+  }
+
   signalCount() {
     return this.signalsSeen;
   }
@@ -274,14 +278,30 @@ export async function main() {
   scheduleUtcRolloverLog();
   feed.start();
   console.log(`[trader] ${config.trader.mode} loop running on 5m for ${config.trader.coins.join(', ')}`);
+  let heartbeatRunning = false;
+  const publishHeartbeat = async () => {
+    if (heartbeatRunning) return;
+    heartbeatRunning = true;
+    try {
+      if (executor instanceof TestnetExecutor) {
+        await executor.reconcileLiveState(account, store);
+      }
+      const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
+      store.saveHeartbeat(heartbeat);
+      logHeartbeat(heartbeat);
+    } catch (error) {
+      trader.recordExternalError(`reconcile: ${errorMessage(error)}`);
+      const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
+      store.saveHeartbeat(heartbeat);
+      logHeartbeat(heartbeat);
+    } finally {
+      heartbeatRunning = false;
+    }
+  };
   const heartbeatTimer = setInterval(() => {
-    const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
-    store.saveHeartbeat(heartbeat);
-    logHeartbeat(heartbeat);
+    void publishHeartbeat();
   }, config.trader.heartbeatSeconds * 1000);
-  const initialHeartbeat = enrichedHeartbeat(feed.health(), trader, account);
-  store.saveHeartbeat(initialHeartbeat);
-  logHeartbeat(initialHeartbeat);
+  await publishHeartbeat();
 
   process.on('SIGINT', () => {
     clearInterval(heartbeatTimer);

@@ -116,6 +116,9 @@ export type LivePosition = {
   quantity: number;
   currentPrice: number;
   unrealizedPnl: number;
+  markPrice?: number | null;
+  liquidationPrice?: number | null;
+  fees?: number;
 };
 
 export type LiveClosedTrade = LivePosition & {

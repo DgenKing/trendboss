@@ -59,6 +59,25 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-09 — Tasked Codex: mirror exchange truth for live positions (+ fees on panel)
+- **Milestone reached:** a natural DOGE RANGE_REVERSION signal opened a real held testnet position
+  with TP/SL recognised — the full live flow works.
+- **Bug found:** the Live panel desynced from the exchange. Hyperliquid showed "No open positions"
+  (flat, equity $964.04) while our panel showed OPEN 3 (BNB/DOGE/SOL) with locally-computed PnLs
+  (incl. SOL −$25.26 on a position that no longer exists). Local state never reconciled after the
+  positions closed on-exchange (TP/SL fired). `Last error: SOL close rejected ... did not fill` is
+  the same cause — the stop had already closed SOL, so our close hit nothing.
+- **Fix wanted (trader + /api/live + Live panel only):**
+  1. CONTINUOUSLY reconcile open positions against Hyperliquid `clearinghouseState` each poll/
+     heartbeat; if the exchange no longer holds a position, mark it CLOSED locally (record the trade,
+     update equity) so phantom positions disappear.
+  2. Display EXCHANGE-REPORTED values (entry, mark, unrealized PnL, margin, liq price) from the
+     clearinghouse — NOT locally computed. Mirror Hyperliquid.
+  3. Make the panel equity match the exchange Total Equity.
+  4. Add FEES to the open-position rows on the panel.
+- **Scope:** trader + dashboard Live panel; do not touch strategy/tuning/backtest/monitor.
+- **Status:** to Codex on `paper-trade`.
+
 ### 2026-06-07 — Tuned 5m with strict drawdown gates
 - Tested 100 realistic `5m` tuning combinations against the shared portfolio, requiring whole/older/recent
   windows to be profitable with max drawdown `<=20%`, plus whole-history PF `>1.3`; 2 candidates survived.
@@ -504,5 +523,22 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 - **Verification:** BNB TESTNET validation filled `2.11 @ 592.35`; Hyperliquid reported open
   `BNB-PERP szi=2.11`, plus resting reduce-only `Stop Market` at `586.37` and `Take Profit Market`
   at `598.21`. The Live state now shows `openPositions[0]` with entry/stop/target and both OIDs.
+
+### 2026-06-09 — Made TESTNET live state reconcile from exchange truth
+- **Problem fixed:** the Live panel could keep local BNB/DOGE/SOL rows after Hyperliquid had
+  already closed them via TP/SL, so the dashboard showed phantom positions and locally-computed PnL.
+- **Exchange source of truth:** TESTNET heartbeat reconciliation now fetches `clearinghouseState`
+  every cycle and mirrors open rows from the exchange. Entry, derived mark price, unrealized PnL,
+  margin, liquidation price, used margin, and equity now come from Hyperliquid, not local math.
+- **Phantom close handling:** if a local position is missing from `clearinghouseState`, the trader
+  cancels any leftover reduce-only trigger orders, records a closed trade from recent exchange
+  fills when available, deletes the local open row, and writes an exchange equity point.
+- **Fees:** live positions now carry a `fees` value from recent exchange fills when available
+  (falling back to stored fill fees), and the Live panel has a Fees column.
+- **/api/live:** the endpoint now derives live mode from the latest live equity row and normalizes
+  heartbeat open count to the actual open-position rows, avoiding stale heartbeat counts in the UI.
+- **Verification:** Hyperliquid reported `accountValue=0`, `totalMarginUsed=0`, no positions, and
+  no open orders. Reconcile moved local BNB/DOGE/SOL to closed trades and `/api/live` then showed
+  `mode=TESTNET`, `equity=0`, `usedMargin=0`, `heartbeat.openPositions=0`, and `openPositions=[]`.
 
 <!-- Add your next entry above this line -->

@@ -47,6 +47,9 @@ export interface LivePosition {
   quantity: number;
   currentPrice: number;
   unrealizedPnl: number;
+  markPrice?: number | null;
+  liquidationPrice?: number | null;
+  fees?: number;
   stopOrderId?: string | null;
   targetOrderId?: string | null;
 }

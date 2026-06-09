@@ -40,7 +40,7 @@ export class TraderAccount {
 
   equity(): number {
     return this.realizedBalance + sum([...this.positions.values()].map((position) => (
-      markToMarket(position, position.currentPrice)
+      position.unrealizedPnl
     )));
   }
 
@@ -88,6 +88,9 @@ export function positionFromSignal(params: {
     quantity,
     currentPrice,
     unrealizedPnl: 0,
+    markPrice: currentPrice,
+    liquidationPrice: null,
+    fees: 0,
     stopOrderId,
     targetOrderId,
   };

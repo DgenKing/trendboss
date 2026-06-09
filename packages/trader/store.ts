@@ -131,8 +131,8 @@ export class TraderStore {
       INSERT INTO live_positions
         (coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
          score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
-         unrealizedPnl, stopOrderId, targetOrderId, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(coin) DO UPDATE SET
         mode = excluded.mode,
         direction = excluded.direction,
@@ -150,6 +150,9 @@ export class TraderStore {
         quantity = excluded.quantity,
         currentPrice = excluded.currentPrice,
         unrealizedPnl = excluded.unrealizedPnl,
+        markPrice = excluded.markPrice,
+        liquidationPrice = excluded.liquidationPrice,
+        fees = excluded.fees,
         stopOrderId = excluded.stopOrderId,
         targetOrderId = excluded.targetOrderId,
         updatedAt = excluded.updatedAt
@@ -165,9 +168,9 @@ export class TraderStore {
       INSERT INTO live_closed_trades
         (coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
          score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
-         unrealizedPnl, stopOrderId, targetOrderId, exitTime, exitPrice, exitReason,
+         unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId, exitTime, exitPrice, exitReason,
          pnl, returnOnMargin, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(...positionParams(trade), trade.exitTime, trade.exitPrice, trade.exitReason, trade.pnl, trade.returnOnMargin, Date.now());
   }
 
@@ -200,10 +203,19 @@ export class TraderStore {
     return this.db.query(`
       SELECT coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
              score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
-             unrealizedPnl, stopOrderId, targetOrderId
+             unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId
       FROM live_positions
       ORDER BY entryTime ASC
     `).all() as LivePosition[];
+  }
+
+  sumFillFees(coin: string, sinceTime = 0): number {
+    const row = this.db.query(`
+      SELECT COALESCE(SUM(fee), 0) AS fees
+      FROM live_fills
+      WHERE coin = ? AND time >= ?
+    `).get(coin, sinceTime) as { fees: number } | null;
+    return row?.fees ?? 0;
   }
 
   getLatestEquityPoint(): EquityPoint | null {
@@ -217,20 +229,29 @@ export class TraderStore {
 
   getLiveState(): LiveState {
     const latest = this.getLatestEquityPoint();
+    const openPositions = this.getOpenPositions();
+    const heartbeat = this.getHeartbeat();
+    const normalizedHeartbeat = heartbeat
+      ? {
+        ...heartbeat,
+        openPositions: openPositions.length,
+        lastError: latest && latest.time > heartbeat.time ? null : heartbeat.lastError,
+      }
+      : null;
     return {
       enabled: config.trader.enabled,
-      mode: config.trader.mode,
+      mode: latest?.mode ?? config.trader.mode,
       tradeInterval: config.trader.tradeInterval,
       updatedAt: latest?.time ?? null,
-      heartbeat: this.getHeartbeat(),
+      heartbeat: normalizedHeartbeat,
       equity: latest?.equity ?? config.portfolio.startingCapital,
       realizedBalance: latest?.realizedBalance ?? config.portfolio.startingCapital,
       usedMargin: latest?.usedMargin ?? 0,
-      openPositions: this.getOpenPositions(),
+      openPositions,
       closedTrades: this.db.query(`
         SELECT coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
                score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
-               unrealizedPnl, stopOrderId, targetOrderId, exitTime, exitPrice, exitReason,
+               unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId, exitTime, exitPrice, exitReason,
                pnl, returnOnMargin
         FROM live_closed_trades
         ORDER BY exitTime DESC
@@ -289,6 +310,9 @@ export class TraderStore {
         quantity REAL,
         currentPrice REAL,
         unrealizedPnl REAL,
+        markPrice REAL,
+        liquidationPrice REAL,
+        fees REAL DEFAULT 0,
         stopOrderId TEXT,
         targetOrderId TEXT,
         updatedAt INTEGER
@@ -313,6 +337,9 @@ export class TraderStore {
         quantity REAL,
         currentPrice REAL,
         unrealizedPnl REAL,
+        markPrice REAL,
+        liquidationPrice REAL,
+        fees REAL DEFAULT 0,
         stopOrderId TEXT,
         targetOrderId TEXT,
         exitTime INTEGER,
@@ -371,6 +398,18 @@ export class TraderStore {
         value TEXT
       );
     `);
+    this.addColumn('live_positions', 'markPrice', 'REAL');
+    this.addColumn('live_positions', 'liquidationPrice', 'REAL');
+    this.addColumn('live_positions', 'fees', 'REAL DEFAULT 0');
+    this.addColumn('live_closed_trades', 'markPrice', 'REAL');
+    this.addColumn('live_closed_trades', 'liquidationPrice', 'REAL');
+    this.addColumn('live_closed_trades', 'fees', 'REAL DEFAULT 0');
+  }
+
+  private addColumn(table: string, column: string, definition: string) {
+    const existing = this.db.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (existing.some((item) => item.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   private getHeartbeat(): LiveHeartbeat | null {
@@ -405,6 +444,9 @@ function positionParams(position: LivePosition): SqlValue[] {
     position.quantity,
     position.currentPrice,
     position.unrealizedPnl,
+    position.markPrice ?? position.currentPrice,
+    position.liquidationPrice ?? null,
+    position.fees ?? 0,
     position.stopOrderId ?? null,
     position.targetOrderId ?? null,
   ];

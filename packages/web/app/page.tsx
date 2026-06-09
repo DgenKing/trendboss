@@ -460,8 +460,12 @@ function LivePanel({ state, error }: { state: LiveState | null; error: string | 
                 <tr>
                   <th className="px-3 py-2 font-medium">Market</th>
                   <th className="px-3 py-2 font-medium">Entry</th>
+                  <th className="px-3 py-2 font-medium">Mark</th>
                   <th className="px-3 py-2 font-medium">Stop</th>
                   <th className="px-3 py-2 font-medium">Target</th>
+                  <th className="px-3 py-2 font-medium">Margin</th>
+                  <th className="px-3 py-2 font-medium">Liq</th>
+                  <th className="px-3 py-2 font-medium">Fees</th>
                   <th className="px-3 py-2 font-medium">PnL</th>
                 </tr>
               </thead>
@@ -470,15 +474,19 @@ function LivePanel({ state, error }: { state: LiveState | null; error: string | 
                   <tr key={position.coin} className="border-t border-line">
                     <td className="whitespace-nowrap px-3 py-2 font-semibold">{displayCoin(position.coin)} {position.direction}</td>
                     <td className="whitespace-nowrap px-3 py-2">{formatPrice(position.entry)}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{formatPrice(position.markPrice ?? position.currentPrice)}</td>
                     <td className="whitespace-nowrap px-3 py-2">{formatPrice(position.stop)}</td>
                     <td className="whitespace-nowrap px-3 py-2">{formatPrice(position.target)}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{formatUsd(position.margin)}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{position.liquidationPrice ? formatPrice(position.liquidationPrice) : '--'}</td>
+                    <td className="whitespace-nowrap px-3 py-2">{formatUsd(position.fees ?? 0)}</td>
                     <td className={position.unrealizedPnl >= 0 ? 'whitespace-nowrap px-3 py-2 text-positive' : 'whitespace-nowrap px-3 py-2 text-negative'}>
                       {formatSignedUsd(position.unrealizedPnl)}
                     </td>
                   </tr>
                 ))}
                 {state.openPositions.length === 0 ? (
-                  <tr><td colSpan={5} className="px-3 py-6 text-muted">No live positions.</td></tr>
+                  <tr><td colSpan={9} className="px-3 py-6 text-muted">No live positions.</td></tr>
                 ) : null}
               </tbody>
             </table>

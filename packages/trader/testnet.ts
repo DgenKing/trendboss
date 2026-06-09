@@ -1,10 +1,12 @@
 import { Hyperliquid, type ClearinghouseState, type Meta, type OrderRequest, type OrderResponse } from 'hyperliquid';
 import { config } from '../../config';
-import { closedTradeFromExit, positionFromSignal } from './account';
+import { type TraderAccount, closedTradeFromExit, positionFromSignal } from './account';
+import type { TraderStore } from './store';
 import type {
   CloseOrderRequest,
   CloseOrderResult,
   Executor,
+  LiveClosedTrade,
   LiveFill,
   LivePosition,
   OpenOrderRequest,
@@ -35,6 +37,21 @@ type FrontendOpenOrder = {
   timestamp?: number;
   triggerCondition?: string;
   triggerPx?: string;
+};
+
+type ExchangePosition = ClearinghouseState['assetPositions'][number]['position'];
+
+type UserFill = {
+  closedPnl: string;
+  coin: string;
+  dir: string;
+  fee: string;
+  oid: number;
+  px: string;
+  side: string;
+  startPosition: string;
+  sz: string;
+  time: number;
 };
 
 const TESTNET_SLIPPAGE = 0.003;
@@ -237,6 +254,56 @@ export class TestnetExecutor implements Executor {
     await this.sdk.info.perpetuals.getClearinghouseState(this.accountAddress);
   }
 
+  async reconcileLiveState(account: TraderAccount, store: TraderStore) {
+    const state: ClearinghouseState = await this.sdk.info.perpetuals.getClearinghouseState(this.accountAddress);
+    const openOrders = await this.sdk.info.getFrontendOpenOrders(this.accountAddress, true) as FrontendOpenOrder[];
+    const fills = await this.recentUserFills();
+    const exchangePositions = state.assetPositions
+      .map((item) => item.position)
+      .filter((position) => Math.abs(Number(position.szi)) > 0);
+    const exchangeByCoin = new Map(exchangePositions.map((position) => [plainCoin(position.coin), position]));
+    const localPositions = [...account.positions.values()];
+
+    for (const exchangePosition of exchangePositions) {
+      const coin = plainCoin(exchangePosition.coin);
+      const local = account.positions.get(coin) ?? store.getOpenPositions().find((position) => position.coin === coin);
+      const protective = protectiveOrdersForCoin(openOrders, coin, local?.stop, local?.target);
+      const mirrored = mirrorExchangePosition({
+        coin,
+        exchangePosition,
+        local,
+        protective,
+        fills,
+        storedFees: local ? store.sumFillFees(coin, local.entryTime - 60_000) : 0,
+      });
+      account.positions.set(coin, mirrored);
+      store.upsertPosition(mirrored);
+    }
+
+    for (const local of localPositions) {
+      if (exchangeByCoin.has(local.coin)) continue;
+      await this.cancelProtectiveOrdersForCoin(local.coin, openOrders);
+      const closed = closedTradeFromExchangeFlat(local, fills);
+      account.positions.delete(local.coin);
+      store.deletePosition(local.coin);
+      store.saveClosedTrade(closed);
+      console.log(`[trader] reconciled ${local.coin}: exchange is flat, moved local position to closed trades pnl=${closed.pnl.toFixed(2)}`);
+    }
+
+    const accountValue = numeric(state.marginSummary?.accountValue, config.portfolio.startingCapital);
+    const usedMargin = numeric(state.marginSummary?.totalMarginUsed, 0);
+    const unrealized = sum([...account.positions.values()].map((position) => position.unrealizedPnl));
+    account.realizedBalance = accountValue - unrealized;
+    store.saveEquityPoint({
+      time: Date.now(),
+      mode: 'TESTNET',
+      equity: accountValue,
+      realizedBalance: account.realizedBalance,
+      usedMargin,
+      activePositions: account.positions.size,
+    });
+  }
+
   private async rulesFor(coin: string): Promise<AssetRules> {
     this.meta ??= await this.sdk.info.perpetuals.getMeta();
     const plain = plainCoin(coin);
@@ -265,6 +332,22 @@ export class TestnetExecutor implements Executor {
       await this.sdk.exchange.cancelOrder({ coin: symbol, o: numeric });
     } catch (error) {
       console.error(`TESTNET cancel failed for ${symbol} ${orderId}:`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  private async cancelProtectiveOrdersForCoin(coin: string, openOrders: FrontendOpenOrder[]) {
+    const symbol = toPerpSymbol(coin);
+    for (const order of protectiveOrdersForCoin(openOrders, coin).all) {
+      await this.cancelOrder(symbol, oidText(order.oid));
+    }
+  }
+
+  private async recentUserFills(): Promise<UserFill[]> {
+    try {
+      return await this.sdk.info.getUserFills(this.accountAddress, true) as UserFill[];
+    } catch (error) {
+      console.error('[trader] TESTNET fill history unavailable during reconcile:', error instanceof Error ? error.message : error);
+      return [];
     }
   }
 
@@ -301,18 +384,8 @@ export class TestnetExecutor implements Executor {
   }
 
   private async findProtectiveOrders(coin: string, stop: number, target: number) {
-    const plain = plainCoin(coin);
     const orders = await this.sdk.info.getFrontendOpenOrders(this.accountAddress, true) as FrontendOpenOrder[];
-    const protectiveOrders = orders.filter((order) => (
-      plainCoin(order.coin) === plain &&
-      order.isTrigger === true &&
-      order.reduceOnly === true
-    ));
-    const stopOrder = protectiveOrders.find((order) => matchesTriggerPrice(order, stop))
-      ?? protectiveOrders.find((order) => triggerText(order).includes('stop'));
-    const targetOrder = protectiveOrders.find((order) => matchesTriggerPrice(order, target))
-      ?? protectiveOrders.find((order) => triggerText(order).includes('take profit') || triggerText(order).includes('tp'));
-    return { stop: stopOrder, target: targetOrder, all: protectiveOrders };
+    return protectiveOrdersForCoin(orders, coin, stop, target);
   }
 
   private async closeFilledEntryIfUnprotected(params: {
@@ -490,6 +563,147 @@ function matchesTriggerPrice(order: FrontendOpenOrder, price: number): boolean {
 
 function triggerText(order: FrontendOpenOrder): string {
   return `${order.orderType ?? ''} ${order.triggerCondition ?? ''}`.toLowerCase();
+}
+
+function protectiveOrdersForCoin(orders: FrontendOpenOrder[], coin: string, stop?: number, target?: number) {
+  const plain = plainCoin(coin);
+  const protectiveOrders = orders.filter((order) => (
+    plainCoin(order.coin) === plain &&
+    order.isTrigger === true &&
+    order.reduceOnly === true
+  ));
+  const stopOrder = stop !== undefined
+    ? protectiveOrders.find((order) => matchesTriggerPrice(order, stop))
+    : undefined;
+  const targetOrder = target !== undefined
+    ? protectiveOrders.find((order) => matchesTriggerPrice(order, target))
+    : undefined;
+  return {
+    stop: stopOrder ?? protectiveOrders.find((order) => triggerText(order).includes('stop')),
+    target: targetOrder ?? protectiveOrders.find((order) => triggerText(order).includes('take profit') || triggerText(order).includes('tp')),
+    all: protectiveOrders,
+  };
+}
+
+function mirrorExchangePosition(params: {
+  coin: string;
+  exchangePosition: ExchangePosition;
+  local?: LivePosition;
+  protective: { stop?: FrontendOpenOrder; target?: FrontendOpenOrder };
+  fills: UserFill[];
+  storedFees: number;
+}): LivePosition {
+  const { coin, exchangePosition, local, protective, fills, storedFees } = params;
+  const signedSize = numeric(exchangePosition.szi, 0);
+  const quantity = Math.abs(signedSize);
+  const notional = numeric(exchangePosition.positionValue, 0);
+  const markPrice = quantity > 0 ? notional / quantity : local?.currentPrice ?? numeric(exchangePosition.entryPx, 0);
+  const entryTime = local?.entryTime ?? latestOpenFillTime(coin, fills) ?? Date.now();
+  const fees = exchangeFeesForCoinSince(coin, entryTime - 60_000, fills) || storedFees || local?.fees || 0;
+  return {
+    coin,
+    mode: 'TESTNET',
+    direction: signedSize >= 0 ? 'LONG' : 'SHORT',
+    strategy: local?.strategy ?? 'RANGE_REVERSION',
+    regime: local?.regime ?? 'RANGE',
+    entryTime,
+    entry: numeric(exchangePosition.entryPx, local?.entry ?? 0),
+    stop: triggerPrice(protective.stop) ?? local?.stop ?? 0,
+    target: triggerPrice(protective.target) ?? local?.target ?? 0,
+    score: local?.score ?? 0,
+    margin: numeric(exchangePosition.marginUsed, local?.margin ?? 0),
+    notional,
+    allocationPct: local?.allocationPct ?? 0,
+    riskAtStop: local?.riskAtStop ?? 0,
+    quantity,
+    currentPrice: markPrice,
+    unrealizedPnl: numeric(exchangePosition.unrealizedPnl, 0),
+    markPrice,
+    liquidationPrice: numericOrNull(exchangePosition.liquidationPx),
+    fees,
+    stopOrderId: oidText(protective.stop?.oid) ?? local?.stopOrderId ?? null,
+    targetOrderId: oidText(protective.target?.oid) ?? local?.targetOrderId ?? null,
+  };
+}
+
+function closedTradeFromExchangeFlat(position: LivePosition, fills: UserFill[]): LiveClosedTrade {
+  const relevant = fills
+    .filter((fill) => plainCoin(fill.coin) === position.coin && fill.time >= position.entryTime - 60_000);
+  const closing = relevant.filter((fill) => Math.abs(numeric(fill.closedPnl, 0)) > 0);
+  const exitTime = Math.max(...closing.map((fill) => fill.time), Date.now());
+  const exitPrice = weightedFillPrice(closing) ?? position.currentPrice;
+  const fees = sum(relevant.map((fill) => Math.abs(numeric(fill.fee, 0)))) || position.fees || 0;
+  const pnlFromExchange = closing.length > 0
+    ? sum(closing.map((fill) => numeric(fill.closedPnl, 0))) - sum(closing.map((fill) => Math.abs(numeric(fill.fee, 0))))
+    : position.unrealizedPnl;
+  return {
+    ...position,
+    currentPrice: exitPrice,
+    markPrice: exitPrice,
+    unrealizedPnl: 0,
+    fees,
+    exitTime,
+    exitPrice,
+    exitReason: inferExitReason(position, exitPrice),
+    pnl: pnlFromExchange,
+    returnOnMargin: position.margin > 0 ? pnlFromExchange / position.margin : 0,
+  };
+}
+
+function inferExitReason(position: LivePosition, exitPrice: number): LiveClosedTrade['exitReason'] {
+  const tolerance = 0.001;
+  if (position.direction === 'LONG') {
+    if (position.target > 0 && exitPrice >= position.target * (1 - tolerance)) return 'TARGET';
+    if (position.stop > 0 && exitPrice <= position.stop * (1 + tolerance)) return 'STOP';
+  } else {
+    if (position.target > 0 && exitPrice <= position.target * (1 + tolerance)) return 'TARGET';
+    if (position.stop > 0 && exitPrice >= position.stop * (1 - tolerance)) return 'STOP';
+  }
+  return 'TESTNET_RECONCILED';
+}
+
+function latestOpenFillTime(coin: string, fills: UserFill[]): number | null {
+  const openFills = fills.filter((fill) => (
+    plainCoin(fill.coin) === coin &&
+    Math.abs(numeric(fill.closedPnl, 0)) === 0 &&
+    triggerTextFromFill(fill).includes('open')
+  ));
+  if (openFills.length === 0) return null;
+  return Math.max(...openFills.map((fill) => fill.time));
+}
+
+function triggerTextFromFill(fill: UserFill): string {
+  return `${fill.dir ?? ''}`.toLowerCase();
+}
+
+function exchangeFeesForCoinSince(coin: string, since: number, fills: UserFill[]): number {
+  return sum(fills
+    .filter((fill) => plainCoin(fill.coin) === coin && fill.time >= since)
+    .map((fill) => Math.abs(numeric(fill.fee, 0))));
+}
+
+function weightedFillPrice(fills: UserFill[]): number | null {
+  const totalSize = sum(fills.map((fill) => Math.abs(numeric(fill.sz, 0))));
+  if (totalSize <= 0) return null;
+  return sum(fills.map((fill) => Math.abs(numeric(fill.sz, 0)) * numeric(fill.px, 0))) / totalSize;
+}
+
+function triggerPrice(order?: FrontendOpenOrder): number | null {
+  return order?.triggerPx ? numericOrNull(order.triggerPx) : null;
+}
+
+function numeric(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function numericOrNull(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sum(values: number[]): number {
+  return values.reduce((total, value) => total + value, 0);
 }
 
 function rejectedOrder(reason: string, raw: unknown): OpenOrderResult {
