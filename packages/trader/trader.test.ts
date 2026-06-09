@@ -6,7 +6,7 @@ import type { Candle } from '../core/types';
 import { main } from './index';
 import { PaperExecutor } from './paper';
 import { calculateLiveAllocation, liveAllocationCalculator } from './sizing';
-import { formatPrice, formatSize, loadTestnetSecret, plainCoin } from './testnet';
+import { acceptedOrderId, formatPrice, formatSize, loadTestnetSecret, orderStatusError, plainCoin } from './testnet';
 
 describe('trader config safety', () => {
   test('enabled:false is a no-op', async () => {
@@ -84,6 +84,19 @@ describe('TESTNET rounding helpers', () => {
     expect(plainCoin('NEAR-PERP')).toBe('NEAR');
     expect(plainCoin('NEAR')).toBe('NEAR');
   });
+
+  test('recognizes trigger order ids from known and nested success shapes', () => {
+    expect(acceptedOrderId(orderResponse({ resting: { oid: 123 } }))).toBe('123');
+    expect(acceptedOrderId(orderResponse({ trigger: { oid: 456 } }))).toBe('456');
+    expect(acceptedOrderId(orderResponse({ accepted: { oid: '789' } }))).toBe('789');
+  });
+
+  test('detects per-order errors inside exchange statuses', () => {
+    expect(orderStatusError(orderResponse({ error: 'Order would immediately trigger.' }))).toBe('Order would immediately trigger.');
+    expect(orderStatusError(orderResponse('Reduce only order would increase position.'))).toBe('Reduce only order would increase position.');
+    expect(orderStatusError(orderResponse('waitingForTrigger'))).toBeNull();
+    expect(acceptedOrderId(orderResponse({ error: 'No position to reduce.' }))).toBeNull();
+  });
 });
 
 function testSignal(): StrategySignal {
@@ -116,5 +129,17 @@ function testCandle(index: number, open: number, high: number, low: number, clos
     low,
     close,
     volume: 100,
+  };
+}
+
+function orderResponse(status: unknown) {
+  return {
+    status: 'ok',
+    response: {
+      type: 'order',
+      data: {
+        statuses: [status],
+      },
+    },
   };
 }

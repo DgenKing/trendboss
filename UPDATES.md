@@ -469,4 +469,40 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
   heartbeating with `open=0`. A previous pre-fix orphan `SOL-PERP` testnet position was manually
   flattened and clearinghouse state was confirmed empty afterward.
 
+### 2026-06-09 — Tasked Codex: fix trigger-order parsing (first real fill happened!)
+- **Milestone:** first REAL testnet order filled — BNB entry filled (size 2.099 @ 594.501). Testnet
+  trading works end-to-end.
+- **Bug:** after the entry filled, the TP and SL trigger orders BOTH returned `status:"ok"`, but
+  `acceptedOrderId()` (testnet.ts ~298) only looks for `status.resting.oid` / `status.filled.oid`
+  in `data.statuses` and found neither, so it treated them as "rejected", ran the orphan-close,
+  and flattened the freshly-opened position (open=0). The bot misread its own success and undid it.
+- **Need:** the inner `data.statuses` was truncated in logs (`[Object ...]`), so first DEEP-LOG the
+  full stop/target responses to see the real success/error shape. Then:
+  1. Make `acceptedOrderId` recognise the trigger-order success shape (and any per-order `error`).
+  2. Before orphan-closing, RECONCILE with the exchange (open orders / clearinghouse): only close
+     the entry if the position is genuinely unprotected. Don't close a position whose TP/SL are
+     actually resting on the book.
+  3. Consider placing entry+TP+SL as the intended `normalTpsl` grouped batch if that's more reliable.
+- **Scope:** trader only.
+- **Status:** to Codex on `paper-trade`.
+
+### 2026-06-09 — Fixed TESTNET TP/SL trigger recognition
+- **Root cause confirmed:** separate reduce-only trigger `placeOrder` calls with
+  `grouping:"normalTpsl"` return top-level `status:"ok"` but inner per-order errors:
+  `{"error":"Main order cannot be trigger order."}`. The old parser also treated non-object
+  trigger statuses as missing OIDs, which made the orphan-close path flatten a just-filled entry.
+- **Fix:** TESTNET entries now submit one grouped `normalTpsl` batch: main IOC entry first, then
+  reduce-only SL and TP triggers. The real successful grouped response shape observed on BNB was:
+  `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"totalSz":"2.11","avgPx":"592.35","oid":54690421640}},"waitingForTrigger","waitingForTrigger"]}}}`.
+- **Recognition:** `acceptedOrderId` now supports nested OID success shapes, while
+  `orderStatusError` catches per-order `error` strings and treats `"waitingForTrigger"` as a
+  successful pending trigger state. For grouped trigger statuses of `"waitingForTrigger"`, the
+  executor reconciles via `frontendOpenOrders`.
+- **Protection check:** before any orphan-close, the executor queries frontend open orders and only
+  flattens when both protective triggers are absent. A protected BNB position was kept with
+  `stopOid=54690421641` and `targetOid=54690421642`.
+- **Verification:** BNB TESTNET validation filled `2.11 @ 592.35`; Hyperliquid reported open
+  `BNB-PERP szi=2.11`, plus resting reduce-only `Stop Market` at `586.37` and `Take Profit Market`
+  at `598.21`. The Live state now shows `openPositions[0]` with entry/stop/target and both OIDs.
+
 <!-- Add your next entry above this line -->

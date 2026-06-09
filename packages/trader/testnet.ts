@@ -1,4 +1,4 @@
-import { Hyperliquid, type ClearinghouseState, type Meta, type OrderResponse } from 'hyperliquid';
+import { Hyperliquid, type ClearinghouseState, type Meta, type OrderRequest, type OrderResponse } from 'hyperliquid';
 import { config } from '../../config';
 import { closedTradeFromExit, positionFromSignal } from './account';
 import type {
@@ -19,6 +19,22 @@ type TestnetSecret = {
 type AssetRules = {
   name: string;
   szDecimals: number;
+};
+
+type FrontendOpenOrder = {
+  coin: string;
+  isPositionTpsl?: boolean;
+  isTrigger?: boolean;
+  limitPx?: string;
+  oid: number;
+  orderType?: string;
+  origSz?: string;
+  reduceOnly?: boolean;
+  side?: string;
+  sz?: string;
+  timestamp?: number;
+  triggerCondition?: string;
+  triggerPx?: string;
 };
 
 const TESTNET_SLIPPAGE = 0.003;
@@ -69,45 +85,77 @@ export class TestnetExecutor implements Executor {
 
     await this.sdk.exchange.updateLeverage(symbol, 'isolated', config.portfolio.leverage);
     const entryLimit = formatPrice(protectivePrice(request.candle.close, isBuy));
-    const entryResponse = await this.sdk.exchange.placeOrder({
+    const entryOrder: OrderRequest = {
       coin: symbol,
       is_buy: isBuy,
       sz: size,
       limit_px: entryLimit,
       order_type: { limit: { tif: 'Ioc' } },
       reduce_only: false,
+    };
+    const stopOrder: OrderRequest = {
+      coin: symbol,
+      is_buy: !isBuy,
+      sz: size,
+      limit_px: formatPrice(request.signal.stop),
+      order_type: { trigger: { isMarket: true, triggerPx: formatPrice(request.signal.stop), tpsl: 'sl' } },
+      reduce_only: true,
+    };
+    const targetOrder: OrderRequest = {
+      coin: symbol,
+      is_buy: !isBuy,
+      sz: size,
+      limit_px: formatPrice(request.signal.target),
+      order_type: { trigger: { isMarket: true, triggerPx: formatPrice(request.signal.target), tpsl: 'tp' } },
+      reduce_only: true,
+    };
+    const entryResponse = await this.sdk.exchange.placeOrder({
+      orders: [entryOrder, stopOrder, targetOrder],
+      grouping: 'normalTpsl',
     });
+    logOrderResponse('normalTpsl grouped', request.signal.coin, entryResponse);
     const fill = acceptedFill(entryResponse);
     if (!fill) {
       return rejectedOrder('TESTNET entry rejected or did not fill', entryResponse);
     }
 
-    const stopResponse = await this.sdk.exchange.placeOrder({
-      coin: symbol,
-      is_buy: !isBuy,
-      sz: fill.totalSz,
-      limit_px: formatPrice(request.signal.stop),
-      order_type: { trigger: { isMarket: true, triggerPx: formatPrice(request.signal.stop), tpsl: 'sl' } },
-      reduce_only: true,
-      grouping: 'normalTpsl',
+    const stopResponse = singleStatusResponse(entryResponse, 1);
+    logTriggerResponse('stop', request.signal.coin, stopResponse);
+    const targetResponse = singleStatusResponse(entryResponse, 2);
+    logTriggerResponse('target', request.signal.coin, targetResponse);
+
+    const triggerProtection = await this.resolveTriggerProtection({
+      coin: request.signal.coin,
+      stop: request.signal.stop,
+      target: request.signal.target,
+      stopResponse,
+      targetResponse,
     });
-    const targetResponse = await this.sdk.exchange.placeOrder({
-      coin: symbol,
-      is_buy: !isBuy,
-      sz: fill.totalSz,
-      limit_px: formatPrice(request.signal.target),
-      order_type: { trigger: { isMarket: true, triggerPx: formatPrice(request.signal.target), tpsl: 'tp' } },
-      reduce_only: true,
-      grouping: 'normalTpsl',
-    });
-    const stopOid = acceptedOrderId(stopResponse);
-    const targetOid = acceptedOrderId(targetResponse);
-    if (!stopOid || !targetOid) {
-      console.error('TESTNET trigger order rejected', { stopResponse, targetResponse });
-      await this.cancelOrder(symbol, stopOid);
-      await this.cancelOrder(symbol, targetOid);
-      await this.closeFilledEntry(symbol, isBuy, fill.totalSz, request.candle.close, rules);
-      return { accepted: false, reason: 'TESTNET trigger order rejected', raw: { stopResponse, targetResponse } };
+    if (!triggerProtection.protected) {
+      console.error('TESTNET trigger order rejected or not resting', {
+        stopOid: triggerProtection.stopOid,
+        targetOid: triggerProtection.targetOid,
+        stopError: triggerProtection.stopError,
+        targetError: triggerProtection.targetError,
+        openOrders: triggerProtection.openOrders,
+      });
+      await this.cancelOrder(symbol, triggerProtection.stopOid);
+      await this.cancelOrder(symbol, triggerProtection.targetOid);
+      await this.closeFilledEntryIfUnprotected({
+        symbol,
+        coin: request.signal.coin,
+        entryWasBuy: isBuy,
+        size: fill.totalSz,
+        referencePrice: request.candle.close,
+        rules,
+        stop: request.signal.stop,
+        target: request.signal.target,
+      });
+      return {
+        accepted: false,
+        reason: `TESTNET trigger order rejected or not resting${triggerProtection.failureReason ? `: ${triggerProtection.failureReason}` : ''}`,
+        raw: { stopResponse, targetResponse, triggerProtection },
+      };
     }
 
     const exchangePosition = await this.findExchangePosition(request.signal.coin);
@@ -117,8 +165,8 @@ export class TestnetExecutor implements Executor {
       allocation: request.allocation,
       entryPrice,
       currentPrice: request.candle.close,
-      stopOrderId: stopOid,
-      targetOrderId: targetOid,
+      stopOrderId: triggerProtection.stopOid,
+      targetOrderId: triggerProtection.targetOid,
     });
     position.quantity = Math.abs(Number(exchangePosition?.szi ?? fill.totalSz));
     position.notional = Number(exchangePosition?.positionValue ?? position.notional);
@@ -220,30 +268,90 @@ export class TestnetExecutor implements Executor {
     }
   }
 
-  private async closeFilledEntry(
-    symbol: string,
-    entryWasBuy: boolean,
-    size: string,
-    referencePrice: number,
-    rules: AssetRules,
-  ) {
+  private async resolveTriggerProtection(params: {
+    coin: string;
+    stop: number;
+    target: number;
+    stopResponse: unknown;
+    targetResponse: unknown;
+  }) {
+    const stopError = orderStatusError(params.stopResponse);
+    const targetError = orderStatusError(params.targetResponse);
+    const openOrders = await this.findProtectiveOrders(params.coin, params.stop, params.target);
+    const stopOid = acceptedOrderId(params.stopResponse) ?? oidText(openOrders.stop?.oid);
+    const targetOid = acceptedOrderId(params.targetResponse) ?? oidText(openOrders.target?.oid);
+    const protectedOnExchange = Boolean(openOrders.stop && openOrders.target);
+    const responseAccepted = Boolean(stopOid && targetOid && !stopError && !targetError);
+
+    if (protectedOnExchange) {
+      console.log(
+        `[trader] TESTNET protective triggers resting for ${params.coin}: stopOid=${oidText(openOrders.stop?.oid)} targetOid=${oidText(openOrders.target?.oid)}`,
+      );
+    }
+
+    return {
+      protected: protectedOnExchange || responseAccepted,
+      stopOid,
+      targetOid,
+      stopError,
+      targetError,
+      failureReason: stopError ?? targetError ?? (!stopOid ? 'missing stop oid' : !targetOid ? 'missing target oid' : null),
+      openOrders: openOrders.all,
+    };
+  }
+
+  private async findProtectiveOrders(coin: string, stop: number, target: number) {
+    const plain = plainCoin(coin);
+    const orders = await this.sdk.info.getFrontendOpenOrders(this.accountAddress, true) as FrontendOpenOrder[];
+    const protectiveOrders = orders.filter((order) => (
+      plainCoin(order.coin) === plain &&
+      order.isTrigger === true &&
+      order.reduceOnly === true
+    ));
+    const stopOrder = protectiveOrders.find((order) => matchesTriggerPrice(order, stop))
+      ?? protectiveOrders.find((order) => triggerText(order).includes('stop'));
+    const targetOrder = protectiveOrders.find((order) => matchesTriggerPrice(order, target))
+      ?? protectiveOrders.find((order) => triggerText(order).includes('take profit') || triggerText(order).includes('tp'));
+    return { stop: stopOrder, target: targetOrder, all: protectiveOrders };
+  }
+
+  private async closeFilledEntryIfUnprotected(params: {
+    symbol: string;
+    coin: string;
+    entryWasBuy: boolean;
+    size: string;
+    referencePrice: number;
+    rules: AssetRules;
+    stop: number;
+    target: number;
+  }) {
+    const openOrders = await this.findProtectiveOrders(params.coin, params.stop, params.target);
+    if (openOrders.stop && openOrders.target) {
+      console.log(
+        `[trader] TESTNET orphan-close skipped for ${params.coin}: protective triggers are resting stopOid=${openOrders.stop.oid} targetOid=${openOrders.target.oid}`,
+      );
+      return;
+    }
+
+    await this.cancelOrder(params.symbol, oidText(openOrders.stop?.oid));
+    await this.cancelOrder(params.symbol, oidText(openOrders.target?.oid));
     try {
       const closeResponse = await this.sdk.exchange.placeOrder({
-        coin: symbol,
-        is_buy: !entryWasBuy,
-        sz: formatSize(Number(size), rules.szDecimals),
-        limit_px: formatPrice(protectivePrice(referencePrice, !entryWasBuy)),
+        coin: params.symbol,
+        is_buy: !params.entryWasBuy,
+        sz: formatSize(Number(params.size), params.rules.szDecimals),
+        limit_px: formatPrice(protectivePrice(params.referencePrice, !params.entryWasBuy)),
         order_type: { limit: { tif: 'Ioc' } },
         reduce_only: true,
       });
       const closeFill = acceptedFill(closeResponse);
       if (!closeFill) {
-        console.error(`TESTNET orphan entry close for ${symbol} rejected or did not fill`, closeResponse);
+        console.error(`TESTNET orphan entry close for ${params.symbol} rejected or did not fill`, closeResponse);
         return;
       }
-      console.log(`[trader] TESTNET orphan entry closed for ${symbol}: size=${closeFill.totalSz} avgPx=${closeFill.avgPx}`);
+      console.log(`[trader] TESTNET orphan entry closed for ${params.symbol}: size=${closeFill.totalSz} avgPx=${closeFill.avgPx}`);
     } catch (error) {
-      console.error(`TESTNET orphan entry close failed for ${symbol}:`, error instanceof Error ? error.message : error);
+      console.error(`TESTNET orphan entry close failed for ${params.symbol}:`, error instanceof Error ? error.message : error);
     }
   }
 }
@@ -295,14 +403,93 @@ function acceptedFill(response: OrderResponse | unknown): { oid: number; totalSz
   return null;
 }
 
-function acceptedOrderId(response: OrderResponse | unknown): string | null {
+export function acceptedOrderId(response: OrderResponse | unknown): string | null {
   const order = response as OrderResponse;
-  if (order.status !== 'ok') return null;
+  if (!order || order.status !== 'ok') return null;
   for (const status of order.response?.data?.statuses ?? []) {
     if (status.resting?.oid) return String(status.resting.oid);
     if (status.filled?.oid) return String(status.filled.oid);
+    const nestedOid = findNestedOid(status);
+    if (nestedOid) return nestedOid;
   }
   return null;
+}
+
+export function orderStatusError(response: unknown): string | null {
+  const order = response as OrderResponse;
+  if (!order || order.status !== 'ok') return `top-level status ${String(order?.status)}`;
+  for (const status of order.response?.data?.statuses ?? []) {
+    if (typeof status === 'string') return statusStringError(status);
+    const error = findNestedError(status);
+    if (error) return error;
+  }
+  return null;
+}
+
+function statusStringError(status: string): string | null {
+  const normalized = status.toLowerCase();
+  if (normalized === 'waitingfortrigger' || normalized === 'resting' || normalized === 'filled') return null;
+  return status;
+}
+
+function findNestedOid(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'oid' && (typeof item === 'number' || typeof item === 'string')) return String(item);
+    const nested = findNestedOid(item);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function findNestedError(value: unknown): string | null {
+  if (typeof value === 'string') return null;
+  if (!value || typeof value !== 'object') return null;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'error' && typeof item === 'string') return item;
+    const nested = findNestedError(item);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function logTriggerResponse(kind: 'stop' | 'target', coin: string, response: unknown) {
+  console.log(`[trader] TESTNET ${kind} trigger response for ${coin}: ${safeStringify(response)}`);
+}
+
+function logOrderResponse(kind: string, coin: string, response: unknown) {
+  console.log(`[trader] TESTNET ${kind} response for ${coin}: ${safeStringify(response)}`);
+}
+
+function singleStatusResponse(response: unknown, index: number): OrderResponse | unknown {
+  const order = response as OrderResponse;
+  const status = order.response?.data?.statuses?.[index];
+  return {
+    status: order.status,
+    response: {
+      type: order.response?.type ?? 'order',
+      data: {
+        statuses: status === undefined ? [] : [status],
+      },
+    },
+  };
+}
+
+function safeStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item);
+}
+
+function oidText(oid: number | string | null | undefined): string | null {
+  return oid === null || oid === undefined ? null : String(oid);
+}
+
+function matchesTriggerPrice(order: FrontendOpenOrder, price: number): boolean {
+  if (!order.triggerPx) return false;
+  return Number(order.triggerPx) === Number(formatPrice(price));
+}
+
+function triggerText(order: FrontendOpenOrder): string {
+  return `${order.orderType ?? ''} ${order.triggerCondition ?? ''}`.toLowerCase();
 }
 
 function rejectedOrder(reason: string, raw: unknown): OpenOrderResult {
