@@ -415,6 +415,7 @@ function LivePanel({ state, error }: { state: LiveState | null; error: string | 
           <div className="text-xs uppercase text-muted">Live (Paper/Testnet)</div>
           <div className="mt-1 flex flex-wrap items-baseline gap-3">
             <h2 className="text-2xl font-semibold">{formatUsd(state.equity)}</h2>
+            <span className="text-sm text-muted">total equity</span>
             <span className={`font-semibold ${tone}`}>{state.mode}</span>
             <span className="text-sm text-muted">not real money</span>
           </div>
@@ -434,6 +435,7 @@ function LivePanel({ state, error }: { state: LiveState | null; error: string | 
         </div>
         <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-sm">
           <MetricLite label="Open" value={String(state.openPositions.length)} />
+          <MetricLite label="Total equity" value={formatUsd(state.equity)} />
           <MetricLite label="Used margin" value={formatUsd(state.usedMargin)} />
           <MetricLite label="Closed" value={String(state.closedTrades.length)} />
           <MetricLite label="Signals" value={String(heartbeat?.signalsSeen ?? 0)} />

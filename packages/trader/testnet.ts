@@ -256,6 +256,7 @@ export class TestnetExecutor implements Executor {
 
   async reconcileLiveState(account: TraderAccount, store: TraderStore) {
     const state: ClearinghouseState = await this.sdk.info.perpetuals.getClearinghouseState(this.accountAddress);
+    const spotState = await this.sdk.info.spot.getSpotClearinghouseState(this.accountAddress, true);
     const openOrders = await this.sdk.info.getFrontendOpenOrders(this.accountAddress, true) as FrontendOpenOrder[];
     const fills = await this.recentUserFills();
     const exchangePositions = state.assetPositions
@@ -290,7 +291,7 @@ export class TestnetExecutor implements Executor {
       console.log(`[trader] reconciled ${local.coin}: exchange is flat, moved local position to closed trades pnl=${closed.pnl.toFixed(2)}`);
     }
 
-    const accountValue = numeric(state.marginSummary?.accountValue, config.portfolio.startingCapital);
+    const accountValue = totalAccountEquity(state, spotState);
     const usedMargin = numeric(state.marginSummary?.totalMarginUsed, 0);
     const unrealized = sum([...account.positions.values()].map((position) => position.unrealizedPnl));
     account.realizedBalance = accountValue - unrealized;
@@ -557,6 +558,7 @@ function oidText(oid: number | string | null | undefined): string | null {
 }
 
 function matchesTriggerPrice(order: FrontendOpenOrder, price: number): boolean {
+  if (!Number.isFinite(price) || price <= 0) return false;
   if (!order.triggerPx) return false;
   return Number(order.triggerPx) === Number(formatPrice(price));
 }
@@ -572,10 +574,10 @@ function protectiveOrdersForCoin(orders: FrontendOpenOrder[], coin: string, stop
     order.isTrigger === true &&
     order.reduceOnly === true
   ));
-  const stopOrder = stop !== undefined
+  const stopOrder = stop !== undefined && stop > 0
     ? protectiveOrders.find((order) => matchesTriggerPrice(order, stop))
     : undefined;
-  const targetOrder = target !== undefined
+  const targetOrder = target !== undefined && target > 0
     ? protectiveOrders.find((order) => matchesTriggerPrice(order, target))
     : undefined;
   return {
@@ -686,6 +688,13 @@ function weightedFillPrice(fills: UserFill[]): number | null {
   const totalSize = sum(fills.map((fill) => Math.abs(numeric(fill.sz, 0))));
   if (totalSize <= 0) return null;
   return sum(fills.map((fill) => Math.abs(numeric(fill.sz, 0)) * numeric(fill.px, 0))) / totalSize;
+}
+
+function totalAccountEquity(state: ClearinghouseState, spotState: unknown): number {
+  const usdc = (spotState as { balances?: Array<{ coin: string; total: string }> })
+    .balances
+    ?.find((balance) => balance.coin === 'USDC');
+  return numeric(usdc?.total, numeric(state.marginSummary?.accountValue, config.portfolio.startingCapital));
 }
 
 function triggerPrice(order?: FrontendOpenOrder): number | null {

@@ -541,4 +541,24 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
   no open orders. Reconcile moved local BNB/DOGE/SOL to closed trades and `/api/live` then showed
   `mode=TESTNET`, `equity=0`, `usedMargin=0`, `heartbeat.openPositions=0`, and `openPositions=[]`.
 
+### 2026-06-09 — Fixed live balance not showing after reconcile crash
+- **Cause:** TESTNET reconciliation was fetching the correct Hyperliquid balance, but crashed before
+  saving it when a local/placeholder stop or target was `0`; `matchesTriggerPrice()` tried to run
+  the zero value through TESTNET price formatting, which rejects non-positive prices.
+- **Fix:** protective-order matching now ignores missing/non-positive stop and target values before
+  formatting, so reconciliation can mirror exchange equity and open positions even when local rows
+  are incomplete or stale.
+- **Verification:** Hyperliquid reported a SOL position and account value around `$19.49`; after
+  reconcile, local live state showed `equity=19.491757`, `usedMargin=19.491757`, one SOL open row,
+  `heartbeatOpen=1`, and no stale last error.
+
+### 2026-06-09 — Corrected Live panel total equity vs used margin
+- **Cause:** the Live panel header was showing Hyperliquid perps `marginSummary.accountValue`,
+  which matched the isolated position margin bucket (~`$19`) rather than the whole testnet account.
+- **Fix:** TESTNET reconciliation now uses spot `USDC.total` as Live total equity, while keeping
+  perps `marginSummary.totalMarginUsed` as Used margin. The panel labels now say `total equity`
+  and `Used margin` explicitly.
+- **Verification:** after reconcile, `/api/live` showed total equity `964.212808`, used margin
+  `19.45651`, and one SOL open position.
+
 <!-- Add your next entry above this line -->
