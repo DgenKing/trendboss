@@ -20,6 +20,7 @@ export class LiveTrader {
   private readonly recentEvents = new Map<string, MarketEvent[]>();
   private signalsSeen = 0;
   private lastAction = 'none';
+  private lastError: string | null = null;
 
   constructor(
     private readonly store: TraderStore,
@@ -38,6 +39,14 @@ export class LiveTrader {
   }
 
   async handleClosedCandle(coin: string, interval: string, candle: Candle, source: CandleFeedSource = 'WS') {
+    try {
+      await this.handleClosedCandleUnsafe(coin, interval, candle, source);
+    } catch (error) {
+      this.recordError(`handler ${coin} ${interval}: ${errorMessage(error)}`);
+    }
+  }
+
+  private async handleClosedCandleUnsafe(coin: string, interval: string, candle: Candle, source: CandleFeedSource = 'WS') {
     this.store.saveCandles(coin, interval, [candle]);
     if (interval === config.trader.tradeInterval) {
       this.lastAction = `none (${source} ${coin} ${interval} ${new Date(candle.closeTime).toISOString()})`;
@@ -61,7 +70,7 @@ export class LiveTrader {
       return;
     }
 
-    const t = config.tuning['5m'];
+    const t = liveTraderTuning();
     const regimeInterval = config.regimeForTrade['5m'];
     const recentCandles = this.store.getRecentCandles(coin, '5m', 100);
     const regimeCandles = this.store.getRecentCandles(coin, regimeInterval, 100);
@@ -98,11 +107,14 @@ export class LiveTrader {
       const position = this.account.positions.get(coin);
       if (!position) {
         console.log(`[trader] ${coin} engine exit ${exit.reason}, no live position to close`);
+        this.recordError(`${coin} engine exit ${exit.reason} ignored: no live position`);
+        this.resetEngine(coin);
         continue;
       }
-      const result = await this.executor.closePosition({ position, exit, candle });
+      const result = await this.safeClosePosition({ position, exit, candle });
       if (!result.accepted || !result.closedTrade) {
-        console.error(`[trader] ${coin} close rejected: ${result.reason ?? 'unknown'}`);
+        this.recordError(`${coin} close rejected: ${result.reason ?? 'unknown'}`);
+        this.resetEngine(coin);
         continue;
       }
       this.account.close(result.closedTrade);
@@ -136,10 +148,11 @@ export class LiveTrader {
       this.saveDecision(decisionFromSignal(signal, allocation.status, reason, allocation));
       if (allocation.status === 'REJECTED') continue;
 
-      const result = await this.executor.openPosition({ signal, allocation, candle });
+      const result = await this.safeOpenPosition({ signal, allocation, candle });
       if (!result.accepted || !result.position) {
         this.saveDecision(decisionFromSignal(signal, 'SKIPPED', 'EXECUTOR_REJECTED', allocation));
-        console.error(`[trader] ${coin} open rejected: ${result.reason ?? 'unknown'}`);
+        this.recordError(`${coin} open rejected: ${result.reason ?? 'unknown'}`);
+        this.resetEngine(coin);
         continue;
       }
       this.account.open(result.position);
@@ -154,7 +167,7 @@ export class LiveTrader {
   }
 
   private computeLevels(coin: string) {
-    const t = config.tuning['5m'];
+    const t = liveTraderTuning();
     const dailyCandles = this.store.getRecentCandles(coin, '1d', config.backfillTarget['1d']);
     try {
       const levels = computeLevels(dailyCandles, {
@@ -179,12 +192,49 @@ export class LiveTrader {
     this.store.saveDecision(decision);
   }
 
+  private async safeOpenPosition(request: Parameters<Executor['openPosition']>[0]) {
+    try {
+      return await this.executor.openPosition(request);
+    } catch (error) {
+      return {
+        accepted: false,
+        reason: errorMessage(error),
+        raw: error,
+      };
+    }
+  }
+
+  private async safeClosePosition(request: Parameters<Executor['closePosition']>[0]) {
+    try {
+      return await this.executor.closePosition(request);
+    } catch (error) {
+      return {
+        accepted: false,
+        reason: errorMessage(error),
+        raw: error,
+      };
+    }
+  }
+
+  private resetEngine(coin: string) {
+    this.engines.set(coin, new RegimeAwareStrategyEngine());
+  }
+
+  private recordError(message: string) {
+    this.lastError = message;
+    console.error(`[trader] ${message}`);
+  }
+
   signalCount() {
     return this.signalsSeen;
   }
 
   lastActionText() {
     return this.lastAction;
+  }
+
+  lastErrorText() {
+    return this.lastError;
   }
 }
 
@@ -197,6 +247,7 @@ export async function main() {
     throw new Error('Trader supports 5m only.');
   }
   logTraderCoinSelection();
+  logLiveTuning();
   if (!config.trader.enabled) {
     console.log('[trader] disabled by config.trader.enabled=false; no live loop started.');
     return;
@@ -250,6 +301,7 @@ function enrichedHeartbeat(
     signalsSeen: trader.signalCount(),
     openPositions: account.positions.size,
     lastAction: trader.lastActionText(),
+    lastError: trader.lastErrorText(),
   };
 }
 
@@ -270,6 +322,9 @@ function logHeartbeat(heartbeat: LiveHeartbeat) {
       heartbeat.signalsSeen
     } open=${heartbeat.openPositions} lastAction=${heartbeat.lastAction}`,
   );
+  if (heartbeat.lastError) {
+    console.log(`[heartbeat] lastError ${heartbeat.lastError}`);
+  }
   console.log(`[heartbeat] lastClosed ${lastClosed}`);
 }
 
@@ -289,6 +344,26 @@ function logTraderCoinSelection() {
   for (const item of skipped) {
     console.log(`[trader] - ${item.coin}: ${item.reason}`);
   }
+}
+
+function liveTraderTuning() {
+  return config.trader.tuning ?? config.tuning['5m'];
+}
+
+function logLiveTuning() {
+  const t = liveTraderTuning();
+  console.log('[trader] live tuning override:', {
+    adxThreshold: t.regime.adxThreshold,
+    rangeMaxAdx: t.range.maxAdx,
+    rangeMinScore: t.range.minScore,
+    touchTolerance: t.touchTolerance,
+    touchCooldownMinutes: t.touchCooldownMinutes,
+    confirmWithinCandles: t.confirmWithinCandles,
+    breakoutLookback: t.trend.breakoutLookback,
+    rsiLongMin: t.trend.rsiLongMin,
+    rsiShortMax: t.trend.rsiShortMax,
+    targetR: { range: t.range.targetR, trend: t.trend.targetR },
+  });
 }
 
 function decisionFromSignal(
@@ -328,6 +403,10 @@ function latestCompletedUtcDay() {
   const now = new Date();
   const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   return new Date(todayStart - DAY_MS).toISOString().slice(0, 10);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 if (import.meta.main) {

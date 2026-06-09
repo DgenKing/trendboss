@@ -92,6 +92,7 @@ export type LiveHeartbeat = {
   signalsSeen: number;
   openPositions: number;
   lastAction: string;
+  lastError: string | null;
   feedPath: 'WS' | 'REST_POLL' | 'NONE';
   rawChannels: Record<string, number>;
   lastRawChannel: string | null;

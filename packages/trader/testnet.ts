@@ -26,6 +26,7 @@ const TESTNET_SLIPPAGE = 0.003;
 export class TestnetExecutor implements Executor {
   readonly mode = 'TESTNET' as const;
   private meta: Meta | null = null;
+  private readonly loggedRules = new Set<string>();
 
   private constructor(
     private readonly sdk: Hyperliquid,
@@ -105,6 +106,7 @@ export class TestnetExecutor implements Executor {
       console.error('TESTNET trigger order rejected', { stopResponse, targetResponse });
       await this.cancelOrder(symbol, stopOid);
       await this.cancelOrder(symbol, targetOid);
+      await this.closeFilledEntry(symbol, isBuy, fill.totalSz, request.candle.close, rules);
       return { accepted: false, reason: 'TESTNET trigger order rejected', raw: { stopResponse, targetResponse } };
     }
 
@@ -190,8 +192,12 @@ export class TestnetExecutor implements Executor {
   private async rulesFor(coin: string): Promise<AssetRules> {
     this.meta ??= await this.sdk.info.perpetuals.getMeta();
     const plain = plainCoin(coin);
-    const item = this.meta.universe.find((asset) => asset.name === plain);
+    const item = this.meta.universe.find((asset) => plainCoin(asset.name) === plain);
     if (!item) throw new Error(`No TESTNET metadata for ${coin}; refusing to place order.`);
+    if (!this.loggedRules.has(plain)) {
+      this.loggedRules.add(plain);
+      console.log(`[trader] TESTNET metadata ${coin}: sdkName=${item.name} plain=${plain} szDecimals=${item.szDecimals}`);
+    }
     return item;
   }
 
@@ -211,6 +217,33 @@ export class TestnetExecutor implements Executor {
       await this.sdk.exchange.cancelOrder({ coin: symbol, o: numeric });
     } catch (error) {
       console.error(`TESTNET cancel failed for ${symbol} ${orderId}:`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  private async closeFilledEntry(
+    symbol: string,
+    entryWasBuy: boolean,
+    size: string,
+    referencePrice: number,
+    rules: AssetRules,
+  ) {
+    try {
+      const closeResponse = await this.sdk.exchange.placeOrder({
+        coin: symbol,
+        is_buy: !entryWasBuy,
+        sz: formatSize(Number(size), rules.szDecimals),
+        limit_px: formatPrice(protectivePrice(referencePrice, !entryWasBuy)),
+        order_type: { limit: { tif: 'Ioc' } },
+        reduce_only: true,
+      });
+      const closeFill = acceptedFill(closeResponse);
+      if (!closeFill) {
+        console.error(`TESTNET orphan entry close for ${symbol} rejected or did not fill`, closeResponse);
+        return;
+      }
+      console.log(`[trader] TESTNET orphan entry closed for ${symbol}: size=${closeFill.totalSz} avgPx=${closeFill.avgPx}`);
+    } catch (error) {
+      console.error(`TESTNET orphan entry close failed for ${symbol}:`, error instanceof Error ? error.message : error);
     }
   }
 }
@@ -234,7 +267,7 @@ function toPerpSymbol(coin: string): string {
   return `${coin}-PERP`;
 }
 
-function plainCoin(coin: string): string {
+export function plainCoin(coin: string): string {
   return coin.includes('-PERP') ? coin.slice(0, -5) : coin;
 }
 

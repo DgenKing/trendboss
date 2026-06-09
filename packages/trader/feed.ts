@@ -50,7 +50,10 @@ export class TraderFeed {
   private reconnectAttempt = 0;
   private staleReconnects = 0;
   private wsPausedUntil = 0;
-  private lastCandleSource: CandleFeedSource | 'NONE' = 'NONE';
+  private wsPauseLogged = false;
+  private readonly liveCandles = new Map<string, Candle>();
+  private lastWsCandleAt: number | null = null;
+  private lastRestPollCandleAt: number | null = null;
   private polling = false;
 
   constructor(
@@ -94,7 +97,8 @@ export class TraderFeed {
       signalsSeen: overrides.signalsSeen ?? 0,
       openPositions: overrides.openPositions ?? 0,
       lastAction: overrides.lastAction ?? 'none',
-      feedPath: this.lastCandleSource,
+      lastError: null,
+      feedPath: this.activeFeedPath(),
       rawChannels: Object.fromEntries(this.rawChannels),
       lastRawChannel: this.lastRawChannel,
     };
@@ -119,6 +123,7 @@ export class TraderFeed {
     this.handlers.onLog?.(
       `Opening Hyperliquid WebSocket for ${config.trader.coins.length} coins x ${traderIntervals().length} intervals`,
     );
+    this.wsPauseLogged = false;
     this.socket = new WebSocket(traderWsUrl());
 
     this.socket.onopen = () => {
@@ -132,6 +137,7 @@ export class TraderFeed {
     this.socket.onmessage = (message) => {
       this.lastMessageAt = Date.now();
       this.socketHealthy = true;
+      this.staleReconnects = 0;
       this.handleSocketMessage(message.data);
       this.emitHealth();
     };
@@ -181,7 +187,7 @@ export class TraderFeed {
 
     if (channel === 'candle') {
       const raw = message.data as RawCandle;
-      this.handleClosedCandle(raw.s, raw.i, parseCandle(raw), 'WS');
+      this.handleSocketCandle(raw.s, raw.i, parseCandle(raw));
       return;
     }
 
@@ -210,15 +216,18 @@ export class TraderFeed {
 
     this.staleReconnects += 1;
     this.socketHealthy = false;
-    this.handlers.onLog?.(
-      `[trader] WebSocket stale: ${Math.floor((Date.now() - this.lastMessageAt) / 1000)}s since last message; REST poll fallback is active`,
-    );
+    if (!this.wsPauseLogged) {
+      this.handlers.onLog?.(
+        `[trader] WebSocket stale: ${Math.floor((Date.now() - this.lastMessageAt) / 1000)}s since last message; REST poll fallback is active`,
+      );
+    }
     if (this.staleReconnects >= 3) {
-      this.wsPausedUntil = Date.now() + 5 * 60 * 1000;
-      this.handlers.onLog?.('[trader] WebSocket stayed stale after 3 checks; pausing WS reconnects for 300s to stop reconnect spam');
+      this.enterWsPause();
     }
     this.emitHealth();
-    this.socket.close();
+    const staleSocket = this.socket;
+    this.socket = null;
+    staleSocket.close();
   }
 
   private scheduleReconnect() {
@@ -229,6 +238,13 @@ export class TraderFeed {
       this.reconnectTimer = null;
       this.connectSocket();
     }, delay);
+  }
+
+  private enterWsPause() {
+    if (Date.now() < this.wsPausedUntil && this.wsPauseLogged) return;
+    this.wsPausedUntil = Date.now() + 5 * 60 * 1000;
+    this.wsPauseLogged = true;
+    this.handlers.onLog?.('[trader] WebSocket stayed stale after 3 checks; pausing WS reconnects for 300s to stop reconnect spam');
   }
 
   private startRestPolling() {
@@ -259,9 +275,10 @@ export class TraderFeed {
     const intervalMs = intervalToMs(interval);
     const endTime = Date.now();
     const lastCandleTime = this.store.getLastCandleTime(coin, interval);
-    const startTime = lastCandleTime === null
+    const usableLastCandleTime = lastCandleTime !== null && lastCandleTime <= endTime ? lastCandleTime : null;
+    const startTime = usableLastCandleTime === null
       ? endTime - 3 * intervalMs
-      : Math.max(0, lastCandleTime - intervalMs);
+      : Math.max(0, usableLastCandleTime - intervalMs);
     await this.waitForRestBudget(Math.max(1, Math.ceil((endTime - startTime) / intervalMs)));
 
     try {
@@ -272,16 +289,32 @@ export class TraderFeed {
         startTime,
         endTime,
       });
-      if (candles.length > 0) this.store.saveCandles(coin, interval, candles);
-      for (const candle of candles) {
-        if (candle.closeTime <= Date.now()) {
-          this.handleClosedCandle(coin, interval, candle, 'REST_POLL');
-        }
+      const closedCandles = candles.filter((candle) => candle.closeTime <= Date.now());
+      if (closedCandles.length > 0) this.store.saveCandles(coin, interval, closedCandles);
+      for (const candle of closedCandles) {
+        this.handleClosedCandle(coin, interval, candle, 'REST_POLL');
       }
     } catch (error) {
       this.handlers.onLog?.(
         `[trader] REST poll failed for ${coin} ${interval}: ${error instanceof Error ? error.message : error}`,
       );
+    }
+  }
+
+  private handleSocketCandle(coin: string, interval: string, candle: Candle) {
+    this.handlers.onCurrentPrice(coin, candle.close);
+
+    const key = `${coin}:${interval}`;
+    const live = this.liveCandles.get(key);
+    if (live && candle.openTime > live.openTime) {
+      this.handleClosedCandle(coin, interval, live, 'WS');
+      this.liveCandles.set(key, candle);
+      return;
+    }
+
+    this.liveCandles.set(key, candle);
+    if (Date.now() >= candle.closeTime) {
+      this.handleClosedCandle(coin, interval, candle, 'WS');
     }
   }
 
@@ -295,13 +328,36 @@ export class TraderFeed {
       for (const item of keep) this.processed.add(item);
     }
 
-    this.lastCandleSource = source;
+    if (source === 'WS') {
+      this.lastWsCandleAt = Date.now();
+      this.wsPauseLogged = false;
+      this.staleReconnects = 0;
+    } else {
+      this.lastRestPollCandleAt = Date.now();
+    }
     this.closedCandlesByInterval[interval] = (this.closedCandlesByInterval[interval] ?? 0) + 1;
     this.lastClosedCandleByCoin[coin] = Math.max(
       this.lastClosedCandleByCoin[coin] ?? 0,
       candle.closeTime,
     );
-    void this.handlers.onClosedCandle(coin, interval, candle, source);
+    Promise.resolve(this.handlers.onClosedCandle(coin, interval, candle, source)).catch((error) => {
+      this.handlers.onLog?.(
+        `[trader] closed-candle handler failed for ${coin} ${interval}: ${error instanceof Error ? error.message : error}`,
+      );
+    });
+  }
+
+  private activeFeedPath(): CandleFeedSource | 'NONE' {
+    const now = Date.now();
+    if (
+      this.socketHealthy &&
+      this.lastWsCandleAt !== null &&
+      now - this.lastWsCandleAt <= config.staleSocketSeconds * 1000
+    ) {
+      return 'WS';
+    }
+    if (this.lastRestPollCandleAt !== null) return 'REST_POLL';
+    return 'NONE';
   }
 
   private async backfillInterval(coin: string, interval: string) {
@@ -310,18 +366,19 @@ export class TraderFeed {
     const target = config.backfillTarget[interval] ?? 5000;
     const existingCount = this.store.countCandles(coin, interval);
     const lastCandleTime = this.store.getLastCandleTime(coin, interval);
-    const startTime = existingCount < target || lastCandleTime === null
+    const usableLastCandleTime = lastCandleTime !== null && lastCandleTime <= endTime ? lastCandleTime : null;
+    const startTime = existingCount < target || usableLastCandleTime === null
       ? endTime - target * intervalMs
-      : Math.max(0, lastCandleTime - intervalMs);
+      : Math.max(0, usableLastCandleTime - intervalMs);
     const estimatedCandles = Math.min(target + 1, Math.max(1, Math.ceil((endTime - startTime) / intervalMs)));
     await this.waitForRestBudget(estimatedCandles);
-    const candles = await fetchCandles({
+    const candles = (await fetchCandles({
       restUrl: traderRestInfoUrl(),
       coin,
       interval,
       startTime,
       endTime,
-    });
+    })).filter((candle) => candle.closeTime <= Date.now());
     this.store.saveCandles(coin, interval, candles);
     this.handlers.onLog?.(
       `[trader] Backfilled ${coin} ${interval}: saved ${candles.length}, cached ${this.store.countCandles(coin, interval)}/${target}`,

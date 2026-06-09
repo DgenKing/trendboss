@@ -416,4 +416,57 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 - **Verification:** TESTNET heartbeat showed non-zero counters (`5m=19`, `1h=15`, `1d=15` after
   the first poll cycle) with `socket=healthy`, `lastMsg=0s`, and `feed=REST_POLL`.
 
+### 2026-06-09 — Tasked Codex: loosen 5m for live trading + fix WS recovery/log spam
+- **Observed:** trader ran ~12.5h on testnet with a healthy feed (WS, then REST_POLL after a
+  Hyperliquid 502 outage) and produced `signals=0` the whole time. Confirms the gated 5m tuning
+  (`adxThreshold=38` / `range.maxAdx=16` dead-zone) is too strict to trade in normal conditions.
+- **Two fixes wanted (trader only; do NOT touch the gated backtest tuning blocks):**
+  1. **Loosen for live:** add a SEPARATE live/testnet trading profile (e.g. `config.trader.tuning`
+     override) that closes the ADX dead-zone so it actually fires trades — lower `adxThreshold`,
+     raise `range.maxAdx`, etc. Keep the backtest's `config.tuning['5m']` UNCHANGED. The trader
+     uses the override; the backtest/portfolio keep their gated numbers.
+  2. **Feed robustness:** the "pausing WS reconnects for 300s" message spams every ~5s and the WS
+     never recovers after an outage (stuck on REST_POLL forever). Make the pause actually quiet the
+     log (log once), and let the WS genuinely re-establish a live connection after the pause window.
+- **Status:** to be handed to Codex on `paper-trade`.
+
+### 2026-06-09 — Tasked Codex: fix testnet order metadata lookup + crash isolation
+- **Milestone:** loosened live profile worked — trader fired its first live signal (NEAR) within
+  minutes. But placing the order crashed the whole process.
+- **Bug 1 (fatal, why no order ever placed):** `TestnetExecutor.rulesFor` matches
+  `asset.name === plainCoin(coin)` (e.g. `"NEAR"`) against the `nomeida/hyperliquid` SDK
+  `getMeta()`, but the SDK returns names in `"<COIN>-PERP"` form — so the lookup matches NOTHING
+  for any coin and throws `No TESTNET metadata for <coin>`. Confirmed the raw testnet `meta`
+  endpoint DOES contain plain `"NEAR"` (szDecimals 1), so data exists; it's purely a name-format
+  mismatch. Fix: normalise both sides (e.g. compare `plainCoin(asset.name) === plainCoin(coin)`)
+  or use the raw info meta; log the actual names to verify.
+- **Bug 2 (critical robustness):** the thrown error was uncaught and killed the entire trader
+  (`exited with code 1`) after 14h. Wrap per-coin entry/exit handling in try/catch: log, skip that
+  trade, keep the loop running. One coin must never crash the bot.
+- **Bug 3 (minor):** on startup the warmed-up engine emitted "exit TARGET, no live position to
+  close" — live engine state isn't aligned with live executor positions. Align so the live engine
+  doesn't think it holds positions the executor never opened.
+- **Scope:** trader only; gated tuning/backtest/monitor untouched.
+- **Status:** to Codex on `paper-trade`.
+
+### 2026-06-09 — Fixed TESTNET order metadata + crash isolation
+- **Metadata fix:** TESTNET order rules now normalise SDK symbols like `NEAR-PERP` and configured
+  coins like `NEAR` through the same `plainCoin(...)` path before matching. Startup/order logs now
+  print the resolved SDK name, plain coin, and `szDecimals` so the mapping is auditable.
+- **Crash isolation:** per-coin entry/exit handling now catches executor failures, records the
+  latest error for the heartbeat and Live panel, skips only the failed trade, and keeps the trader
+  process running.
+- **State alignment:** rejected opens and orphan exit signals reset that coin's live engine state
+  so warmed-up strategy state cannot keep emitting exits for positions the executor never opened.
+- **Order safety:** if a TESTNET entry fills but TP/SL trigger placement fails, the executor now
+  immediately attempts a reduce-only IOC close for that filled size to avoid leaving an orphan.
+- **Live-only tuning override:** `config.trader.tuning` remains separate from the gated 5m tuning
+  and uses ADX threshold `18`, range max ADX `30`, range min score `40`, touch tolerance `0.25%`,
+  10-minute touch cooldown, 8-candle confirmation, 12-candle breakout, ATR stop `1.8`, target `1.2R`,
+  and RSI long/short filters at `50/50`. `config.tuning['5m']` is unchanged.
+- **Verification:** TESTNET resolved metadata for `TON` as `sdkName=TON-PERP plain=TON szDecimals=1`;
+  the entry was rejected/not filled by the exchange, was logged as `lastError`, and the loop kept
+  heartbeating with `open=0`. A previous pre-fix orphan `SOL-PERP` testnet position was manually
+  flattened and clearinghouse state was confirmed empty afterward.
+
 <!-- Add your next entry above this line -->

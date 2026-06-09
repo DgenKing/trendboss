@@ -428,6 +428,9 @@ function LivePanel({ state, error }: { state: LiveState | null; error: string | 
           <div className="mt-1 text-xs text-muted">
             candles {candleCounters} · feed {heartbeat?.feedPath ?? 'NONE'} · last msg {heartbeat?.secondsSinceLastMessage === null || heartbeat?.secondsSinceLastMessage === undefined ? 'never' : `${heartbeat.secondsSinceLastMessage}s ago`}
           </div>
+          {heartbeat?.lastError ? (
+            <div className="mt-1 text-xs font-medium text-negative">Last error: {heartbeat.lastError}</div>
+          ) : null}
         </div>
         <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-sm">
           <MetricLite label="Open" value={String(state.openPositions.length)} />

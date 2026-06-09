@@ -95,6 +95,7 @@ export interface LiveHeartbeat {
   signalsSeen: number;
   openPositions: number;
   lastAction: string;
+  lastError: string | null;
   feedPath: CandleFeedSource | 'NONE';
   rawChannels: Record<string, number>;
   lastRawChannel: string | null;

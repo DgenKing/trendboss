@@ -6,7 +6,7 @@ import type { Candle } from '../core/types';
 import { main } from './index';
 import { PaperExecutor } from './paper';
 import { calculateLiveAllocation, liveAllocationCalculator } from './sizing';
-import { formatPrice, formatSize, loadTestnetSecret } from './testnet';
+import { formatPrice, formatSize, loadTestnetSecret, plainCoin } from './testnet';
 
 describe('trader config safety', () => {
   test('enabled:false is a no-op', async () => {
@@ -78,6 +78,11 @@ describe('TESTNET rounding helpers', () => {
     expect(formatPrice(12345.6789)).toBe('12346');
     expect(formatPrice(0.012345678)).toBe('0.012346');
     expect(formatSize(1.234567, 3)).toBe('1.234');
+  });
+
+  test('normalizes SDK perp metadata names to plain configured coins', () => {
+    expect(plainCoin('NEAR-PERP')).toBe('NEAR');
+    expect(plainCoin('NEAR')).toBe('NEAR');
   });
 });
 

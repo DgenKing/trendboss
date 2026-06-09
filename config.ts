@@ -49,6 +49,38 @@ export type IntervalTuning = {
 
 export type TraderMode = 'PAPER' | 'TESTNET';
 
+const LIVE_TRADER_TUNING: IntervalTuning = {
+  swingLookbackDays: 0,
+  pivotWindow: 2,
+  swingMinDistancePct: 0.015,
+  touchTolerance: 0.0025,
+  touchCooldownMinutes: 10,
+  confirmWithinCandles: 8,
+  stopBuffer: 0.0005,
+  regime: {
+    adxPeriod: 14,
+    adxThreshold: 18,
+    fastEmaPeriod: 20,
+    slowEmaPeriod: 50,
+    slowEmaSlopeLookback: 10,
+  },
+  trend: {
+    breakoutLookback: 12,
+    atrPeriod: 14,
+    atrStopMultiple: 1.8,
+    targetR: 1.2,
+    rsiPeriod: 14,
+    rsiLongMin: 50,
+    rsiShortMax: 50,
+  },
+  range: {
+    enabled: true,
+    maxAdx: 30,
+    targetR: 1.2,
+    minScore: 40,
+  },
+};
+
 const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
 const traderMode = process.env.TRADER_MODE === 'TESTNET' ? 'TESTNET' : 'PAPER';
 const traderEnabled = process.env.TRADER_ENABLED === 'true';
@@ -290,7 +322,8 @@ export const config = {
     testnetRestUrl: 'https://api.hyperliquid-testnet.xyz',
     testnetWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
     maxOpenPositions: 10,
-    heartbeatSeconds: 60,
+    heartbeatSeconds: Number(process.env.TRADER_HEARTBEAT_SECONDS ?? 60),
+    tuning: LIVE_TRADER_TUNING,
     dbPath: process.env.TRADER_DB_PATH ?? 'data/trader.db',
   },
   staleSocketSeconds: 90,
