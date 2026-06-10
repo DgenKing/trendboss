@@ -49,38 +49,6 @@ export type IntervalTuning = {
 
 export type TraderMode = 'PAPER' | 'TESTNET';
 
-const LIVE_TRADER_TUNING: IntervalTuning = {
-  swingLookbackDays: 0,
-  pivotWindow: 2,
-  swingMinDistancePct: 0.015,
-  touchTolerance: 0.0025,
-  touchCooldownMinutes: 10,
-  confirmWithinCandles: 8,
-  stopBuffer: 0.0005,
-  regime: {
-    adxPeriod: 14,
-    adxThreshold: 18,
-    fastEmaPeriod: 20,
-    slowEmaPeriod: 50,
-    slowEmaSlopeLookback: 10,
-  },
-  trend: {
-    breakoutLookback: 12,
-    atrPeriod: 14,
-    atrStopMultiple: 1.8,
-    targetR: 1.2,
-    rsiPeriod: 14,
-    rsiLongMin: 50,
-    rsiShortMax: 50,
-  },
-  range: {
-    enabled: true,
-    maxAdx: 30,
-    targetR: 1.2,
-    minScore: 40,
-  },
-};
-
 const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
 const traderMode = process.env.TRADER_MODE === 'TESTNET' ? 'TESTNET' : 'PAPER';
 const traderEnabled = process.env.TRADER_ENABLED === 'true';
@@ -121,6 +89,38 @@ const regimeForTrade = {
   '4h': '1d',
 } as const satisfies Record<TradeInterval, string>;
 
+const FIVE_MIN_TUNING: IntervalTuning = {
+  swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
+  pivotWindow: 2,
+  swingMinDistancePct: 0.015,  // a swing must be >=1.5% beyond the range, else it's the same peak -> null
+  touchTolerance: 0.0006,      // 0.06%
+  touchCooldownMinutes: 60,
+  confirmWithinCandles: 3,
+  stopBuffer: 0.0005,
+  regime: {
+    adxPeriod: 14,
+    adxThreshold: 38,
+    fastEmaPeriod: 20,
+    slowEmaPeriod: 50,
+    slowEmaSlopeLookback: 10,
+  },
+  trend: {
+    breakoutLookback: 80,
+    atrPeriod: 14,
+    atrStopMultiple: 3.4,
+    targetR: 2.2,
+    rsiPeriod: 14,
+    rsiLongMin: 62,
+    rsiShortMax: 38,
+  },
+  range: {
+    enabled: true,
+    maxAdx: 16,
+    targetR: 2.4,
+    minScore: 80,
+  },
+};
+
 export const config = {
   coins,
   tradeInterval,
@@ -141,37 +141,7 @@ export const config = {
   backfillRequestSpacingMs: 300,
   tuning: {
     // ===== 5m tuning =====
-    '5m': {
-      swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
-      pivotWindow: 2,
-      swingMinDistancePct: 0.015,  // a swing must be >=1.5% beyond the range, else it's the same peak -> null
-      touchTolerance: 0.0006,      // 0.06%
-      touchCooldownMinutes: 60,
-      confirmWithinCandles: 3,
-      stopBuffer: 0.0005,
-      regime: {
-        adxPeriod: 14,
-        adxThreshold: 38,
-        fastEmaPeriod: 20,
-        slowEmaPeriod: 50,
-        slowEmaSlopeLookback: 10,
-      },
-      trend: {
-        breakoutLookback: 80,
-        atrPeriod: 14,
-        atrStopMultiple: 3.4,
-        targetR: 2.2,
-        rsiPeriod: 14,
-        rsiLongMin: 62,
-        rsiShortMax: 38,
-      },
-      range: {
-        enabled: true,
-        maxAdx: 16,
-        targetR: 2.4,
-        minScore: 80,
-      },
-    },
+    '5m': FIVE_MIN_TUNING,
     // ===== 15m tuning =====
     '15m': {
       swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
@@ -323,7 +293,7 @@ export const config = {
     testnetWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
     maxOpenPositions: 10,
     heartbeatSeconds: Number(process.env.TRADER_HEARTBEAT_SECONDS ?? 60),
-    tuning: LIVE_TRADER_TUNING,
+    tuning: FIVE_MIN_TUNING,
     dbPath: process.env.TRADER_DB_PATH ?? 'data/trader.db',
   },
   staleSocketSeconds: 90,

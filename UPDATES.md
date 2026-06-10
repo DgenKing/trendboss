@@ -59,6 +59,14 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-10 — Wired live trader to 5m backtest tuning
+- Hoisted the validated 5m tuning block into `FIVE_MIN_TUNING` and pointed both
+  `config.tuning['5m']` and `config.trader.tuning` at the same object reference.
+- Removed the separate live trader tuning block so PAPER/TESTNET live settings cannot drift
+  away from the 5m backtest settings again.
+- Verified the old live tuning constant is gone from code, `bun run check` passes, the 5m backtest
+  snapshot is unchanged, and PAPER startup logs the 5m tuning values.
+
 ### 2026-06-10 — Fixed TESTNET reconciliation audit bugs
 - Fixed TESTNET equity to sum spot USDC plus perps account value, so open-position margin is counted
   and a zero spot balance cannot zero live equity when perps funds exist.
@@ -571,5 +579,28 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
   and `Used margin` explicitly.
 - **Verification:** after reconcile, `/api/live` showed total equity `964.212808`, used margin
   `19.45651`, and one SOL open position.
+
+### 2026-06-10 — Tasked Codex: make live trader use the 5m backtest tuning exactly
+- **Problem:** the live paper/testnet trader is NOT trading the 5m backtest strategy. The
+  engine logic is shared (`RegimeAwareStrategyEngine`), but the *settings* diverge. The 5m
+  backtest reads `config.tuning['5m']` (`api.ts` `buildBacktest`); the live trader reads a
+  separate `LIVE_TRADER_TUNING` constant (`config.ts` ~52, wired via `config.trader.tuning`
+  and `index.ts` `liveTraderTuning`). The live block is looser/more aggressive and is losing
+  money on the running Hyperliquid paper trade, while the 5m backtest is profitable.
+- **Divergent fields (live → should be):** touchTolerance 0.0025→0.0006, touchCooldownMinutes
+  10→60, confirmWithinCandles 8→3, regime.adxThreshold 18→38, trend.breakoutLookback 12→80,
+  atrStopMultiple 1.8→3.4, trend.targetR 1.2→2.2, rsiLongMin 50→62, rsiShortMax 50→38,
+  range.maxAdx 30→16, range.targetR 1.2→2.4, range.minScore 40→80. (Other fields already
+  matched.) This was a drift from the original `2026-06-07` spec, which required
+  "Use the tuned 5m block from `config.tuning['5m']`."
+- **Fix tasked:** in `config.ts`, hoist the 5m block into one `const FIVE_MIN_TUNING`, use it
+  for BOTH `config.tuning['5m']` and `config.trader.tuning` (same object reference so they can
+  never drift again), and DELETE `LIVE_TRADER_TUNING`. Config-wiring only; no engine/backtest/
+  sizing/executor changes; no change to any 5m value or to other timeframes.
+- **Expected effect:** live trader becomes much less active (wider touch, longer cooldown,
+  higher score bar, harder trend filter) but only takes the trades the 5m backtest validated.
+- **Docs:** spec `docs/superpowers/specs/2026-06-10-live-tuning-match-5m-backtest-design.md`,
+  plan `docs/superpowers/plans/2026-06-10-live-tuning-match-5m-backtest.md`.
+- **Scope:** `config.ts` only. **Status:** to Codex on `paper-trade`.
 
 <!-- Add your next entry above this line -->
