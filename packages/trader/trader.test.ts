@@ -6,7 +6,19 @@ import type { Candle } from '../core/types';
 import { main } from './index';
 import { PaperExecutor } from './paper';
 import { calculateLiveAllocation, liveAllocationCalculator } from './sizing';
-import { acceptedOrderId, formatPrice, formatSize, loadTestnetSecret, orderStatusError, plainCoin } from './testnet';
+import { TraderStore } from './store';
+import type { LivePosition } from './types';
+import {
+  acceptedOrderId,
+  closedTradeFromExchangeFlat,
+  formatPrice,
+  formatSize,
+  inferExitReason,
+  loadTestnetSecret,
+  orderStatusError,
+  plainCoin,
+  totalAccountEquity,
+} from './testnet';
 
 describe('trader config safety', () => {
   test('enabled:false is a no-op', async () => {
@@ -17,6 +29,10 @@ describe('trader config safety', () => {
   test('TESTNET refuses to start without the gitignored secret', async () => {
     const missingSecret = new URL('../../trader.secret.missing.ts', import.meta.url).pathname;
     await expect(loadTestnetSecret(missingSecret)).rejects.toThrow('trader.secret.ts');
+  });
+
+  test('TESTNET trader coin selection excludes dead ZEC market', () => {
+    expect(config.trader.coins).not.toContain('ZEC');
   });
 });
 
@@ -99,6 +115,68 @@ describe('TESTNET rounding helpers', () => {
   });
 });
 
+describe('TESTNET reconciliation helpers', () => {
+  test('sums spot USDC and perps account value for total equity', () => {
+    expect(totalAccountEquity(
+      { marginSummary: { accountValue: '20.5' } } as any,
+      { balances: [{ coin: 'USDC', total: '960.25' }] },
+    )).toBeCloseTo(980.75);
+    expect(totalAccountEquity(
+      { marginSummary: { accountValue: '981' } } as any,
+      { balances: [{ coin: 'USDC', total: '0' }] },
+    )).toBe(981);
+    expect(totalAccountEquity({ marginSummary: {} } as any, { balances: [] })).toBe(config.portfolio.startingCapital);
+  });
+
+  test('uses latest closing fill time, not reconcile time, for exchange-flat trades', () => {
+    const position = testLivePosition({ stopOrderId: '111', targetOrderId: '222' });
+    const trade = closedTradeFromExchangeFlat(position, [
+      userFill({ time: position.entryTime, oid: 10, closedPnl: '0', fee: '0.02' }),
+      userFill({ time: position.entryTime + 1_000, oid: 111, closedPnl: '-3', fee: '0.03', px: '95', sz: '0.5' }),
+      userFill({ time: position.entryTime + 2_000, oid: 111, closedPnl: '-2', fee: '0.04', px: '94', sz: '0.5' }),
+    ]);
+    expect(trade.exitTime).toBe(position.entryTime + 2_000);
+    expect(trade.exitReason).toBe('STOP');
+    expect(trade.exitPrice).toBeCloseTo(94.5);
+    expect(trade.pnl).toBeCloseTo(-5.07);
+  });
+
+  test('prefers filled trigger oid and avoids impossible price-only target labels', () => {
+    const position = testLivePosition({ stopOrderId: '111', targetOrderId: '222' });
+    expect(inferExitReason(position, 104, [{ oid: 222, time: 2 }])).toBe('TARGET');
+    expect(inferExitReason(position, 96, [{ oid: 111, time: 2 }])).toBe('STOP');
+    expect(inferExitReason({ ...position, target: 96 }, 96)).toBe('TESTNET_RECONCILED');
+  });
+});
+
+describe('TraderStore live state persistence', () => {
+  test('updates an equity point instead of inserting duplicates for the same mode and time', () => {
+    const store = new TraderStore(`/tmp/trendboss-trader-${Date.now()}-${Math.random()}.db`);
+    const time = Date.UTC(2026, 5, 10, 12);
+    store.saveEquityPoint({
+      time,
+      mode: 'TESTNET',
+      equity: 900,
+      realizedBalance: 900,
+      usedMargin: 10,
+      activePositions: 1,
+    });
+    store.saveEquityPoint({
+      time,
+      mode: 'TESTNET',
+      equity: 925,
+      realizedBalance: 920,
+      usedMargin: 20,
+      activePositions: 2,
+    });
+    const state = store.getLiveState();
+    store.close();
+    expect(state.equityPoints).toHaveLength(1);
+    expect(state.equityPoints[0].equity).toBe(925);
+    expect(state.equityPoints[0].activePositions).toBe(2);
+  });
+});
+
 function testSignal(): StrategySignal {
   return {
     type: 'CONFIRMED_SIGNAL',
@@ -141,5 +219,60 @@ function orderResponse(status: unknown) {
         statuses: [status],
       },
     },
+  };
+}
+
+function testLivePosition(overrides: Partial<LivePosition> = {}): LivePosition {
+  return {
+    coin: 'ETH',
+    mode: 'TESTNET',
+    direction: 'LONG',
+    strategy: 'RANGE_REVERSION',
+    regime: 'RANGE',
+    entryTime: Date.UTC(2026, 5, 10, 12),
+    entry: 100,
+    stop: 95,
+    target: 105,
+    score: 90,
+    margin: 100,
+    notional: 500,
+    allocationPct: 0.1,
+    riskAtStop: 20,
+    quantity: 1,
+    currentPrice: 100,
+    unrealizedPnl: 0,
+    markPrice: 100,
+    liquidationPrice: null,
+    fees: 0,
+    stopOrderId: null,
+    targetOrderId: null,
+    ...overrides,
+  };
+}
+
+function userFill(overrides: Partial<{
+  closedPnl: string;
+  coin: string;
+  dir: string;
+  fee: string;
+  oid: number;
+  px: string;
+  side: string;
+  startPosition: string;
+  sz: string;
+  time: number;
+}> = {}) {
+  return {
+    closedPnl: '0',
+    coin: 'ETH',
+    dir: 'Close Long',
+    fee: '0',
+    oid: 1,
+    px: '100',
+    side: 'A',
+    startPosition: '1',
+    sz: '1',
+    time: Date.UTC(2026, 5, 10, 12),
+    ...overrides,
   };
 }

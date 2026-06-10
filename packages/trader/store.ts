@@ -175,6 +175,21 @@ export class TraderStore {
   }
 
   saveEquityPoint(point: EquityPoint) {
+    const existing = this.db.query(`
+      SELECT id
+      FROM live_equity_points
+      WHERE time = ? AND mode = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(point.time, point.mode) as { id: number } | null;
+    if (existing) {
+      this.db.prepare(`
+        UPDATE live_equity_points
+        SET equity = ?, realizedBalance = ?, usedMargin = ?, activePositions = ?
+        WHERE id = ?
+      `).run(point.equity, point.realizedBalance, point.usedMargin, point.activePositions, existing.id);
+      return;
+    }
     this.db.prepare(`
       INSERT INTO live_equity_points
         (time, mode, equity, realizedBalance, usedMargin, activePositions)

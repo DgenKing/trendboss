@@ -107,7 +107,6 @@ export class LiveTrader {
       const position = this.account.positions.get(coin);
       if (!position) {
         console.log(`[trader] ${coin} engine exit ${exit.reason}, no live position to close`);
-        this.recordError(`${coin} engine exit ${exit.reason} ignored: no live position`);
         this.resetEngine(coin);
         continue;
       }

@@ -278,7 +278,7 @@ export class TraderFeed {
     const usableLastCandleTime = lastCandleTime !== null && lastCandleTime <= endTime ? lastCandleTime : null;
     const startTime = usableLastCandleTime === null
       ? endTime - 3 * intervalMs
-      : Math.max(0, usableLastCandleTime - intervalMs);
+      : usableLastCandleTime;
     await this.waitForRestBudget(Math.max(1, Math.ceil((endTime - startTime) / intervalMs)));
 
     try {

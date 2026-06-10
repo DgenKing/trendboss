@@ -85,7 +85,7 @@ const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
 const traderMode = process.env.TRADER_MODE === 'TESTNET' ? 'TESTNET' : 'PAPER';
 const traderEnabled = process.env.TRADER_ENABLED === 'true';
 const TESTNET_SUPPORTED_TRADER_COINS = [
-  'BTC', 'ETH', 'SOL', 'BNB', 'HYPE', 'ZEC',
+  'BTC', 'ETH', 'SOL', 'BNB', 'HYPE',
   'NEAR', 'WLD', 'TON', 'SUI', 'DOGE',
 ] as const;
 const testnetSupportedTraderCoins = new Set<string>(TESTNET_SUPPORTED_TRADER_COINS);

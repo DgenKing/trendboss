@@ -59,6 +59,17 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-10 — Fixed TESTNET reconciliation audit bugs
+- Fixed TESTNET equity to sum spot USDC plus perps account value, so open-position margin is counted
+  and a zero spot balance cannot zero live equity when perps funds exist.
+- Reconciled exchange-flat trades now use the latest closing fill time, prefer the filled stop/target
+  trigger oid for exit reason, and avoid impossible price-only target labels.
+- Removed dead `ZEC` from TESTNET trader inclusion, made REST polling resume strictly after the last
+  saved candle, downgraded exchange/engine exit races out of `lastError`, and made same-timestamp
+  equity points update instead of duplicating.
+- Added focused tests for the audit fixes and verified `bun test packages/core/core.test.ts
+  packages/trader/trader.test.ts` plus `bunx tsc --noEmit`.
+
 ### 2026-06-09 — Tasked Codex: mirror exchange truth for live positions (+ fees on panel)
 - **Milestone reached:** a natural DOGE RANGE_REVERSION signal opened a real held testnet position
   with TP/SL recognised — the full live flow works.

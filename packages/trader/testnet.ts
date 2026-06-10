@@ -628,11 +628,13 @@ function mirrorExchangePosition(params: {
   };
 }
 
-function closedTradeFromExchangeFlat(position: LivePosition, fills: UserFill[]): LiveClosedTrade {
+export function closedTradeFromExchangeFlat(position: LivePosition, fills: UserFill[]): LiveClosedTrade {
   const relevant = fills
     .filter((fill) => plainCoin(fill.coin) === position.coin && fill.time >= position.entryTime - 60_000);
   const closing = relevant.filter((fill) => Math.abs(numeric(fill.closedPnl, 0)) > 0);
-  const exitTime = Math.max(...closing.map((fill) => fill.time), Date.now());
+  const exitTime = closing.length > 0
+    ? Math.max(...closing.map((fill) => fill.time))
+    : Date.now();
   const exitPrice = weightedFillPrice(closing) ?? position.currentPrice;
   const fees = sum(relevant.map((fill) => Math.abs(numeric(fill.fee, 0)))) || position.fees || 0;
   const pnlFromExchange = closing.length > 0
@@ -646,20 +648,28 @@ function closedTradeFromExchangeFlat(position: LivePosition, fills: UserFill[]):
     fees,
     exitTime,
     exitPrice,
-    exitReason: inferExitReason(position, exitPrice),
+    exitReason: inferExitReason(position, exitPrice, closing),
     pnl: pnlFromExchange,
     returnOnMargin: position.margin > 0 ? pnlFromExchange / position.margin : 0,
   };
 }
 
-function inferExitReason(position: LivePosition, exitPrice: number): LiveClosedTrade['exitReason'] {
+export function inferExitReason(
+  position: LivePosition,
+  exitPrice: number,
+  closingFills: Array<Pick<UserFill, 'oid' | 'time'>> = [],
+): LiveClosedTrade['exitReason'] {
+  const latestClosing = [...closingFills].sort((a, b) => b.time - a.time)[0];
+  if (latestClosing && position.stopOrderId && String(latestClosing.oid) === position.stopOrderId) return 'STOP';
+  if (latestClosing && position.targetOrderId && String(latestClosing.oid) === position.targetOrderId) return 'TARGET';
+
   const tolerance = 0.001;
   if (position.direction === 'LONG') {
-    if (position.target > 0 && exitPrice >= position.target * (1 - tolerance)) return 'TARGET';
-    if (position.stop > 0 && exitPrice <= position.stop * (1 + tolerance)) return 'STOP';
+    if (position.target > position.entry && exitPrice >= position.target * (1 - tolerance)) return 'TARGET';
+    if (position.stop < position.entry && exitPrice <= position.stop * (1 + tolerance)) return 'STOP';
   } else {
-    if (position.target > 0 && exitPrice <= position.target * (1 + tolerance)) return 'TARGET';
-    if (position.stop > 0 && exitPrice >= position.stop * (1 - tolerance)) return 'STOP';
+    if (position.target < position.entry && exitPrice <= position.target * (1 + tolerance)) return 'TARGET';
+    if (position.stop > position.entry && exitPrice >= position.stop * (1 - tolerance)) return 'STOP';
   }
   return 'TESTNET_RECONCILED';
 }
@@ -690,11 +700,16 @@ function weightedFillPrice(fills: UserFill[]): number | null {
   return sum(fills.map((fill) => Math.abs(numeric(fill.sz, 0)) * numeric(fill.px, 0))) / totalSize;
 }
 
-function totalAccountEquity(state: ClearinghouseState, spotState: unknown): number {
+export function totalAccountEquity(state: ClearinghouseState, spotState: unknown): number {
   const usdc = (spotState as { balances?: Array<{ coin: string; total: string }> })
     .balances
     ?.find((balance) => balance.coin === 'USDC');
-  return numeric(usdc?.total, numeric(state.marginSummary?.accountValue, config.portfolio.startingCapital));
+  const spotUsdc = numericOrNull(usdc?.total);
+  const perpsValue = numericOrNull(state.marginSummary?.accountValue);
+  if (spotUsdc !== null || perpsValue !== null) {
+    return (spotUsdc ?? 0) + (perpsValue ?? 0);
+  }
+  return config.portfolio.startingCapital;
 }
 
 function triggerPrice(order?: FrontendOpenOrder): number | null {
