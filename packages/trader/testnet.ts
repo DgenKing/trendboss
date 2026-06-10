@@ -1,6 +1,7 @@
 import { Hyperliquid, type ClearinghouseState, type Meta, type OrderRequest, type OrderResponse } from 'hyperliquid';
 import { config } from '../../config';
 import { type TraderAccount, closedTradeFromExit, positionFromSignal } from './account';
+import type { TraderLogger } from './logger';
 import type { TraderStore } from './store';
 import type {
   CloseOrderRequest,
@@ -254,7 +255,7 @@ export class TestnetExecutor implements Executor {
     await this.sdk.info.perpetuals.getClearinghouseState(this.accountAddress);
   }
 
-  async reconcileLiveState(account: TraderAccount, store: TraderStore) {
+  async reconcileLiveState(account: TraderAccount, store: TraderStore, logger?: TraderLogger) {
     const state: ClearinghouseState = await this.sdk.info.perpetuals.getClearinghouseState(this.accountAddress);
     const spotState = await this.sdk.info.spot.getSpotClearinghouseState(this.accountAddress, true);
     const openOrders = await this.sdk.info.getFrontendOpenOrders(this.accountAddress, true) as FrontendOpenOrder[];
@@ -288,6 +289,7 @@ export class TestnetExecutor implements Executor {
       account.positions.delete(local.coin);
       store.deletePosition(local.coin);
       store.saveClosedTrade(closed);
+      logger?.tradeClosed(closed, null);
       console.log(`[trader] reconciled ${local.coin}: exchange is flat, moved local position to closed trades pnl=${closed.pnl.toFixed(2)}`);
     }
 
@@ -303,6 +305,9 @@ export class TestnetExecutor implements Executor {
       usedMargin,
       activePositions: account.positions.size,
     });
+    console.log(
+      `[trader] TESTNET reconcile: exchangeOpen=${exchangePositions.length} localOpen=${account.positions.size} equity=${accountValue.toFixed(2)} usedMargin=${usedMargin.toFixed(2)}`,
+    );
   }
 
   private async rulesFor(coin: string): Promise<AssetRules> {

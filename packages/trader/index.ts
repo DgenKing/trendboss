@@ -1,5 +1,5 @@
 import { config } from '../../config';
-import { calculateIndicatorSeries, latestIndicatorAt } from '../core/indicators';
+import { calculateIndicatorSeries, latestIndicatorAt, type IndicatorSnapshot } from '../core/indicators';
 import { computeLevels } from '../core/levels';
 import { RegimeAwareStrategyEngine } from '../core/strategy';
 import type { Candle, Levels, MarketEvent } from '../core/types';
@@ -7,6 +7,7 @@ import { TraderAccount, updatePositionMark } from './account';
 import { PaperExecutor } from './paper';
 import { calculateLiveAllocation } from './sizing';
 import { TraderFeed } from './feed';
+import { entryIndicators, TraderLogger } from './logger';
 import { TraderStore } from './store';
 import { TestnetExecutor } from './testnet';
 import type { CandleFeedSource, Executor, LiveDecision, LiveHeartbeat } from './types';
@@ -26,6 +27,7 @@ export class LiveTrader {
     private readonly store: TraderStore,
     private readonly account: TraderAccount,
     private readonly executor: Executor,
+    private readonly logger: TraderLogger,
   ) {
     for (const coin of config.trader.coins) {
       this.engines.set(coin, new RegimeAwareStrategyEngine());
@@ -74,7 +76,10 @@ export class LiveTrader {
     const regimeInterval = config.regimeForTrade['5m'];
     const recentCandles = this.store.getRecentCandles(coin, '5m', 100);
     const regimeCandles = this.store.getRecentCandles(coin, regimeInterval, 100);
-    const regime = latestIndicatorAt(calculateIndicatorSeries(regimeCandles, t.regime), candle.closeTime);
+    const indicatorSeries = calculateIndicatorSeries(regimeCandles, t.regime);
+    const regime = latestIndicatorAt(indicatorSeries, candle.closeTime);
+    const previousForSlope = previousIndicatorForSlope(indicatorSeries, regime, t.regime.slowEmaSlopeLookback);
+    const indicators = entryIndicators(regime, previousForSlope);
     const engine = this.engines.get(coin);
     if (!engine) return;
 
@@ -102,6 +107,9 @@ export class LiveTrader {
     if (update.signals.length > 0) {
       this.lastAction = `signal ${coin} x${update.signals.length}`;
     }
+    for (const signal of update.signals) {
+      this.logger.signal(signal, indicators, candle);
+    }
 
     for (const exit of update.exits) {
       const position = this.account.positions.get(coin);
@@ -119,24 +127,30 @@ export class LiveTrader {
       this.account.close(result.closedTrade);
       this.store.deletePosition(coin);
       this.store.saveClosedTrade(result.closedTrade);
-      if (result.fill) this.store.saveFill(result.fill);
+      if (result.fill) {
+        this.store.saveFill(result.fill);
+        this.logger.fill(result.fill);
+      }
+      this.logger.tradeClosed(result.closedTrade, result.fill?.fee ?? null);
       console.log(`[trader] closed ${coin} ${result.closedTrade.exitReason} pnl=${result.closedTrade.pnl.toFixed(2)}`);
       this.lastAction = `exit ${coin} ${result.closedTrade.exitReason}`;
     }
 
     for (const signal of update.signals) {
       if (this.account.hasPosition(signal.coin)) {
-        this.saveDecision(decisionFromSignal(signal, 'SKIPPED', 'ACTIVE_SYMBOL'));
+        this.saveDecision(decisionFromSignal(signal, 'SKIPPED', 'ACTIVE_SYMBOL'), signal);
         continue;
       }
       if (this.account.positions.size >= config.trader.maxOpenPositions) {
-        this.saveDecision(decisionFromSignal(signal, 'SKIPPED', 'MAX_POSITIONS'));
+        this.saveDecision(decisionFromSignal(signal, 'SKIPPED', 'MAX_POSITIONS'), signal);
         continue;
       }
 
+      const equityBefore = this.account.equity();
+      const usedMarginBefore = this.account.usedMargin();
       const allocation = calculateLiveAllocation({
-        equity: this.account.equity(),
-        usedMargin: this.account.usedMargin(),
+        equity: equityBefore,
+        usedMargin: usedMarginBefore,
         entry: signal.entry,
         stop: signal.stop,
         direction: signal.direction,
@@ -144,19 +158,35 @@ export class LiveTrader {
       const reason = allocation.status === 'REJECTED'
         ? 'NO_MARGIN'
         : allocation.status === 'PARTIAL' ? 'PARTIAL_MARGIN' : 'ALLOCATED';
-      this.saveDecision(decisionFromSignal(signal, allocation.status, reason, allocation));
+      this.saveDecision(decisionFromSignal(signal, allocation.status, reason, allocation), signal);
       if (allocation.status === 'REJECTED') continue;
 
       const result = await this.safeOpenPosition({ signal, allocation, candle });
       if (!result.accepted || !result.position) {
-        this.saveDecision(decisionFromSignal(signal, 'SKIPPED', 'EXECUTOR_REJECTED', allocation));
+        this.saveDecision(decisionFromSignal(signal, 'SKIPPED', 'EXECUTOR_REJECTED', allocation), signal);
         this.recordError(`${coin} open rejected: ${result.reason ?? 'unknown'}`);
         this.resetEngine(coin);
         continue;
       }
       this.account.open(result.position);
       this.store.upsertPosition(result.position);
-      if (result.fill) this.store.saveFill(result.fill);
+      if (result.fill) {
+        this.store.saveFill(result.fill);
+        this.logger.fill(result.fill);
+      }
+      this.logger.tradeOpened({
+        signal,
+        position: result.position,
+        candle,
+        indicators,
+        equityBefore,
+        equityAfter: this.account.equity(),
+        usedMargin: this.account.usedMargin(),
+        openPositionsCount: this.account.positions.size,
+        entryFee: result.fill?.fee ?? 0,
+        orderId: result.fill?.orderId ?? null,
+        exchangeOrderId: result.position.stopOrderId ?? result.position.targetOrderId ?? null,
+      });
       console.log(`[trader] opened ${coin} ${signal.direction} ${signal.strategy} margin=${allocation.margin.toFixed(2)}`);
       this.lastAction = `entry ${coin} ${signal.direction} ${signal.strategy}`;
     }
@@ -187,8 +217,9 @@ export class LiveTrader {
     this.recentEvents.set(coin, [...(this.recentEvents.get(coin) ?? []), ...events].slice(-200));
   }
 
-  private saveDecision(decision: LiveDecision) {
+  private saveDecision(decision: LiveDecision, signal?: Parameters<TraderLogger['decision']>[1]) {
     this.store.saveDecision(decision);
+    this.logger.decision(decision, signal);
   }
 
   private async safeOpenPosition(request: Parameters<Executor['openPosition']>[0]) {
@@ -221,6 +252,7 @@ export class LiveTrader {
 
   private recordError(message: string) {
     this.lastError = message;
+    this.logger.error(message);
     console.error(`[trader] ${message}`);
   }
 
@@ -249,10 +281,13 @@ export async function main() {
   if (config.trader.tradeInterval !== '5m') {
     throw new Error('Trader supports 5m only.');
   }
+  const logger = new TraderLogger(config.trader.mode);
+  logger.installConsoleCapture();
   logTraderCoinSelection();
   logLiveTuning();
   if (!config.trader.enabled) {
     console.log('[trader] disabled by config.trader.enabled=false; no live loop started.');
+    logger.restoreConsole();
     return;
   }
 
@@ -264,7 +299,7 @@ export async function main() {
   const executor = config.trader.mode === 'TESTNET'
     ? await TestnetExecutor.create()
     : new PaperExecutor();
-  const trader = new LiveTrader(store, account, executor);
+  const trader = new LiveTrader(store, account, executor, logger);
   const feed = new TraderFeed(store, {
     onClosedCandle: (coin, interval, candle, source) => trader.handleClosedCandle(coin, interval, candle, source),
     onCurrentPrice: (coin, price) => account.mark(coin, price),
@@ -283,7 +318,7 @@ export async function main() {
     heartbeatRunning = true;
     try {
       if (executor instanceof TestnetExecutor) {
-        await executor.reconcileLiveState(account, store);
+        await executor.reconcileLiveState(account, store, logger);
       }
       const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
       store.saveHeartbeat(heartbeat);
@@ -306,6 +341,7 @@ export async function main() {
     clearInterval(heartbeatTimer);
     feed.stop();
     store.close();
+    logger.restoreConsole();
     process.exit(0);
   });
 }
@@ -383,6 +419,16 @@ function logLiveTuning() {
     rsiShortMax: t.trend.rsiShortMax,
     targetR: { range: t.range.targetR, trend: t.trend.targetR },
   });
+}
+
+function previousIndicatorForSlope(
+  series: IndicatorSnapshot[],
+  current: IndicatorSnapshot | null,
+  lookback: number,
+): IndicatorSnapshot | null {
+  if (!current) return null;
+  const index = series.findIndex((item) => item.candleCloseTime === current.candleCloseTime);
+  return index >= lookback ? series[index - lookback] : null;
 }
 
 function decisionFromSignal(

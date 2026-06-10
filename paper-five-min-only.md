@@ -51,10 +51,43 @@ TRADER_MODE=TESTNET TRADER_ENABLED=true TRADER_DB_PATH=data/testnet.db bun run t
 
 Two log artifacts per mode, append-only, written to a `logs/` directory:
 
-### a) Structured trade log — JSON Lines (`logs/trades-<mode>.jsonl`)
-One JSON object per line, one line per trade **at open** and an updated/closing line **at
-close** (or: a single line written at close with full lifecycle — Codex's call, but it must
-contain everything below). Every trade record MUST include:
+### a) Structured trade log — EVENT-BASED JSON Lines (`logs/trades-<mode>.jsonl`)
+
+> **Contract confirmed by Hermes (the consuming agents) 2026-06-10.** This is the binding
+> format. It is **one line per EVENT**, NOT one line per trade.
+
+**Consumption model the format must serve:**
+- Agents **poll / read on demand** (not live-tail as the only source of truth). The file is
+  **append-only** and must support **incremental reads via a cursor**: every line carries a
+  monotonic `eventId` (and `ts`) so an agent can resume from `last_seen_id` / `last_seen_ts`.
+- The log must let an agent answer: current open position; what changed since last read; why a
+  trade opened/skipped/rejected; today's realized + unrealized P&L; what happened on a given
+  `tradeId`; whether an order send failed and why; whether the bot is healthy or stale.
+
+**Event model — one line per event, paired by a stable `tradeId`:**
+- Event types: `OPEN`, `CLOSE`, `SKIP`, `ERROR`, `UPDATE` (UPDATE optional, for mark/heartbeat
+  or intermediate state). Optionally also write a final **summarized CLOSE** record, but never
+  rely on a single consolidated line — the per-event lines must stand alone so skip reasons,
+  open reasons, and failure diagnostics are never lost.
+- **`tradeId`** (UUID, immutable) appears on every line and pairs OPEN/UPDATE/CLOSE/SKIP for
+  one trade. Also include when available: `signalId`, `orderId`, `exchangeOrderId`,
+  `positionId`.
+
+**File path & rotation:**
+- Stable current path per mode. If rotated, keep a stable "current" symlink/path **or** a
+  manifest/index file pointing at the active log so an agent always finds the live file.
+
+**Minimum fields on EVERY event line:**
+`eventId`, `ts`, `event`, `tradeId`, `symbol`, `venue` (PAPER/TESTNET), `timeframe` (`5m`),
+`direction`, `strategy`, `status`, `price`, `size`, `stop`, `target`, `reason`,
+`skip_reason` (on SKIP), `error` (on ERROR), `pnl` + `fees` (on CLOSE), `source`/`bot_name`.
+
+**Types/consistency rules (so agents don't choke):**
+- Numbers as JSON numbers, never strings (no `"0.06%"`). Timestamps in ONE format across all
+  lines (epoch ms preferred). Prices raw, not pre-rounded. Stable key names, every line.
+
+**Full debug payload — the OPEN event additionally carries everything below**
+(this is the forensic record; CLOSE carries exit/pnl/fees). Every OPEN MUST include:
 
 **Identity**
 - `coin`, `mode` (PAPER/TESTNET), `strategy` (TREND_MOMENTUM / RANGE_REVERSION),
@@ -117,9 +150,13 @@ text log is the human narrative.
 
 1. `TRADER_MODE=PAPER` and `TRADER_MODE=TESTNET` each run standalone; never a merged loop.
 2. With separate `TRADER_DB_PATH`, paper and testnet state/logs do not collide.
-3. Every opened trade produces a JSONL line containing ALL §4a fields — including the entry
-   indicator snapshot and fees.
-4. Every closed trade records exit price, reason, R-multiple, realized P&L, and total fees.
+3. The trade log is **event-based JSONL** (one line per `OPEN`/`CLOSE`/`SKIP`/`ERROR`), every
+   line carries a monotonic `eventId` + `ts` (cursor support) and a stable UUID `tradeId`
+   pairing the events of one trade.
+4. `OPEN` events carry ALL §4a debug fields (entry indicator snapshot, size, stop/target,
+   fees). `CLOSE` events record exit price, reason, R-multiple, realized P&L, total fees.
+   `SKIP`/`ERROR` events carry `skip_reason`/`error`. Numbers are numeric, timestamps single
+   format.
 5. The text log is append-only and date-rolled per UTC day; it includes skipped-signal
    reasons.
 6. Live 5m signals are still identical to the 5m backtest (shared `FIVE_MIN_TUNING`).
@@ -131,6 +168,29 @@ text log is the human narrative.
 ## 7. Running change log (newest first)
 
 > Format: `### YYYY-MM-DD — short title` then a couple of bullets.
+
+### 2026-06-10 — Implemented event-based trader logs
+- Added `packages/trader/logger.ts` with safe append-only JSONL event logging at
+  `logs/trades-<mode>.jsonl`, a manifest pointing at the active file, and date-rolled text
+  logs at `logs/<mode>-YYYY-MM-DD.log`; write failures report to stderr and never throw.
+- Wired live trader events for `OPEN`, `CLOSE`, `SKIP`, and `ERROR` with monotonic `eventId`,
+  epoch-ms `ts`, stable UUID `tradeId`, signal/order/position IDs where available, and the
+  Hermes minimum field set on every line.
+- Threaded the already-computed live `IndicatorSnapshot` into the `OPEN` forensic payload
+  with size, fees, account context, level, score, and candle data; `CLOSE` events carry
+  exit price/reason, R multiple, realized P&L, and fees.
+- Captured existing console narrative into date-rolled text logs, added explicit signal,
+  decision, fill, and TESTNET reconciliation lines, kept PAPER/TESTNET single-mode operation
+  and the shared 5m tuning untouched. Verified `bun run check` passes.
+
+### 2026-06-10 — Adopted Hermes event-based log contract
+- Hermes (the consuming agents) confirmed the log format: **event-based JSONL**, one line per
+  `OPEN`/`CLOSE`/`SKIP`/`ERROR`/`UPDATE`, shared UUID `tradeId` pairing events, monotonic
+  `eventId`+`ts` for cursor/incremental reads, agents poll/read-on-demand (not live-tail).
+- Updated §4a to this binding contract: minimum per-event fields, type/timestamp consistency
+  rules, stable current path + manifest on rotation, and the full debug payload on `OPEN`.
+- **Note:** supersedes the earlier "one line per trade" wording. If Codex's in-flight pass
+  built the per-trade form, it needs a follow-up pass to convert to event-based.
 
 ### 2026-06-10 — Branch spec created
 - Created this file as the single doc for the `paper-5min-only` branch.

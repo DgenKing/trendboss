@@ -1,13 +1,15 @@
 import { describe, expect, test } from 'bun:test';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { config } from '../../config';
 import { calculatePortfolioAllocation } from '../core/portfolio';
 import type { StrategyExit, StrategySignal } from '../core/strategy';
 import type { Candle } from '../core/types';
 import { main } from './index';
+import { entryIndicators, TraderLogger } from './logger';
 import { PaperExecutor } from './paper';
 import { calculateLiveAllocation, liveAllocationCalculator } from './sizing';
 import { TraderStore } from './store';
-import type { LivePosition } from './types';
+import type { LiveDecision, LivePosition } from './types';
 import {
   acceptedOrderId,
   closedTradeFromExchangeFlat,
@@ -177,6 +179,173 @@ describe('TraderStore live state persistence', () => {
   });
 });
 
+describe('TraderLogger', () => {
+  test('writes cursor-friendly event JSONL records with required trade context', async () => {
+    const dir = `/tmp/trendboss-logger-${Date.now()}-${Math.random()}`;
+    mkdirSync(dir, { recursive: true });
+    const logger = new TraderLogger('PAPER', dir);
+    const signal = testSignal();
+    const candle = testCandle(0, 100, 106, 99, 104);
+    const executor = new PaperExecutor();
+    const allocation = calculateLiveAllocation({
+      equity: 1_000,
+      usedMargin: 0,
+      entry: signal.entry,
+      stop: signal.stop,
+      direction: signal.direction,
+    });
+    const opened = await executor.openPosition({ signal, allocation, candle });
+    logger.tradeOpened({
+      signal,
+      position: opened.position!,
+      candle,
+      indicators: entryIndicators({
+        candleCloseTime: candle.closeTime,
+        ready: true,
+        emaFast: 101,
+        emaSlow: 99,
+        atr: 2,
+        rsi: 55,
+        adx: 38,
+        regime: 'RANGE',
+      }, {
+        candleCloseTime: candle.closeTime - 3_000_000,
+        ready: true,
+        emaFast: 100,
+        emaSlow: 98,
+        atr: 1.5,
+        rsi: 50,
+        adx: 30,
+        regime: 'RANGE',
+      }),
+      equityBefore: 1_000,
+      equityAfter: 1_000,
+      usedMargin: opened.position!.margin,
+      openPositionsCount: 1,
+      entryFee: opened.fill!.fee,
+      orderId: 'paper-entry-1',
+    });
+    logger.decision(decisionFromTestSignal(signal, 'SKIPPED', 'ACTIVE_SYMBOL'), signal);
+    const exit: StrategyExit = {
+      signal,
+      exitTime: candle.closeTime + 5 * 60 * 1000,
+      exitPrice: signal.target,
+      reason: 'TARGET',
+      durationCandles: 1,
+    };
+    const closed = await executor.closePosition({ position: opened.position!, exit, candle });
+    logger.tradeClosed(closed.closedTrade!, closed.fill!.fee);
+    const resumedLogger = new TraderLogger('PAPER', dir);
+    resumedLogger.error('executor rejected order', {
+      coin: signal.coin,
+      direction: signal.direction,
+      strategy: signal.strategy,
+      price: signal.price,
+      stop: signal.stop,
+      target: signal.target,
+    });
+
+    const lines = readFileSync(`${dir}/trades-PAPER.jsonl`, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(lines).toHaveLength(4);
+    for (const [index, line] of lines.entries()) {
+      expect(line.eventId).toBe(index + 1);
+      expect(typeof line.ts).toBe('number');
+      expect(line.ts).toBeGreaterThan(0);
+      expect(line.tradeId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(line).toHaveProperty('symbol');
+      expect(line).toHaveProperty('venue');
+      expect(line.timeframe).toBe('5m');
+      expect(line).toHaveProperty('status');
+      expect(line).toHaveProperty('price');
+      expect(line).toHaveProperty('size');
+      expect(line).toHaveProperty('stop');
+      expect(line).toHaveProperty('target');
+      expect(line).toHaveProperty('reason');
+      expect(line).toHaveProperty('skip_reason');
+      expect(line).toHaveProperty('error');
+      expect(line).toHaveProperty('pnl');
+      expect(line).toHaveProperty('fees');
+      expect(line.source).toBe('trendboss-live-trader');
+      expect(line.bot_name).toBe('trendboss-live-trader');
+    }
+    expect(lines[0]).toMatchObject({
+      event: 'OPEN',
+      symbol: 'ETH',
+      venue: 'PAPER',
+      status: 'OPEN',
+      price: opened.position!.entry,
+      size: opened.position!.quantity,
+      reason: 'OPEN',
+      coin: 'ETH',
+      mode: 'PAPER',
+      exitReason: 'OPEN',
+      levelName: 'rangeLow',
+      levelPrice: 95,
+      equityBefore: 1_000,
+      openPositionsCount: 1,
+      orderId: 'paper-entry-1',
+    });
+    expect(lines[0].indicators).toMatchObject({
+      adx: 38,
+      rsi: 55,
+      atr: 2,
+      fastEma: 101,
+      slowEma: 99,
+      emaSlope: 1,
+      regime: 'RANGE',
+      ready: true,
+    });
+    expect(lines[0].candle.closeTime).toBe(candle.closeTime);
+    expect(lines[0].entryFee).toBeGreaterThan(0);
+    expect(lines[1]).toMatchObject({
+      event: 'SKIP',
+      symbol: 'ETH',
+      status: 'SKIPPED',
+      skip_reason: 'ACTIVE_SYMBOL',
+      price: signal.price,
+      size: 0,
+    });
+    expect(lines[2]).toMatchObject({
+      event: 'CLOSE',
+      symbol: 'ETH',
+      status: 'CLOSED',
+      reason: 'TARGET',
+      exitReason: 'TARGET',
+    });
+    expect(lines[2].tradeId).toBe(lines[0].tradeId);
+    expect(lines[2].price).toBeCloseTo(closed.closedTrade!.exitPrice);
+    expect(lines[2].pnl).toBeCloseTo(closed.closedTrade!.pnl);
+    expect(lines[2].fees).toBeCloseTo(opened.fill!.fee + closed.fill!.fee);
+    expect(lines[2].exitPrice).toBeCloseTo(closed.closedTrade!.exitPrice);
+    expect(lines[2].realizedPnl).toBeCloseTo(closed.closedTrade!.pnl);
+    expect(lines[2].rMultiple).toBeGreaterThan(0);
+    expect(lines[2].exitFee).toBeCloseTo(closed.fill!.fee);
+    expect(lines[2].totalFees).toBeCloseTo(opened.fill!.fee + closed.fill!.fee);
+    expect(lines[3]).toMatchObject({
+      event: 'ERROR',
+      eventId: 4,
+      symbol: 'ETH',
+      status: 'ERROR',
+      error: 'executor rejected order',
+    });
+    expect(JSON.parse(readFileSync(`${dir}/trades-PAPER.manifest.json`, 'utf8')).activeTradeLog).toBe(`${dir}/trades-PAPER.jsonl`);
+  });
+
+  test('writes date-rolled text logs and never throws on write failure', () => {
+    const dir = `/tmp/trendboss-logger-text-${Date.now()}-${Math.random()}`;
+    const logger = new TraderLogger('TESTNET', dir);
+    logger.text('[decision] ETH SKIPPED NO_MARGIN');
+    const date = new Date().toISOString().slice(0, 10);
+    expect(readFileSync(`${dir}/TESTNET-${date}.log`, 'utf8')).toContain('NO_MARGIN');
+
+    const blockedPath = `/tmp/trendboss-logger-blocked-${Date.now()}-${Math.random()}`;
+    writeFileSync(blockedPath, 'not a directory');
+    const failingLogger = new TraderLogger('PAPER', blockedPath);
+    expect(() => failingLogger.text('this write fails but does not throw')).not.toThrow();
+    expect(existsSync(blockedPath)).toBe(true);
+  });
+});
+
 function testSignal(): StrategySignal {
   return {
     type: 'CONFIRMED_SIGNAL',
@@ -219,6 +388,27 @@ function orderResponse(status: unknown) {
         statuses: [status],
       },
     },
+  };
+}
+
+function decisionFromTestSignal(
+  signal: StrategySignal,
+  status: LiveDecision['status'],
+  reason: LiveDecision['reason'],
+): LiveDecision {
+  return {
+    coin: signal.coin,
+    time: signal.candleCloseTime,
+    mode: 'PAPER',
+    direction: signal.direction,
+    strategy: signal.strategy,
+    score: signal.score ?? 0,
+    status,
+    reason,
+    margin: 0,
+    notional: 0,
+    allocationPct: 0,
+    riskAtStop: 0,
   };
 }
 

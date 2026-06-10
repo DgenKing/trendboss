@@ -2,6 +2,7 @@ node_modules/
 .next/
 dist/
 *.log
+logs/
 data/*.db
 data/*.db-shm
 data/*.db-wal
