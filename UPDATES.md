@@ -59,6 +59,15 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
 
+### 2026-06-12 — Cleared stale TESTNET heartbeat errors after successful reconcile
+- Investigated repeated heartbeat `lastError reconcile: 502 Bad Gateway` messages and found the real
+  502 was an older transient Hyperliquid/nginx reconcile failure that kept printing because `lastError`
+  was not cleared after later successful reconciles.
+- Added `LiveTrader.clearLastError()` and clear it after successful TESTNET reconcile before publishing
+  heartbeat state, so current healthy heartbeats do not keep surfacing stale resolved errors.
+- Verified `bun test packages/core/core.test.ts packages/trader/trader.test.ts && bun x tsc --noEmit` passes
+  (`42 pass`, `0 fail`).
+
 ### 2026-06-10 — Wired live trader to 5m backtest tuning
 - Hoisted the validated 5m tuning block into `FIVE_MIN_TUNING` and pointed both
   `config.tuning['5m']` and `config.trader.tuning` at the same object reference.
