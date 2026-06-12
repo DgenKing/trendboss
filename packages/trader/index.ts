@@ -271,6 +271,10 @@ export class LiveTrader {
   lastErrorText() {
     return this.lastError;
   }
+
+  clearLastError() {
+    this.lastError = null;
+  }
 }
 
 export async function main() {
@@ -320,6 +324,7 @@ export async function main() {
       if (executor instanceof TestnetExecutor) {
         await executor.reconcileLiveState(account, store, logger);
       }
+      trader.clearLastError();
       const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
       store.saveHeartbeat(heartbeat);
       logHeartbeat(heartbeat);
