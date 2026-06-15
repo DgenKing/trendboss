@@ -5,7 +5,7 @@ import { calculatePortfolioAllocation } from '../core/portfolio';
 import type { StrategyExit, StrategySignal } from '../core/strategy';
 import type { Candle } from '../core/types';
 import { TraderAccount, updatePositionMark } from './account';
-import { main } from './index';
+import { createHeartbeatPublisher, main } from './index';
 import { entryIndicators, TraderLogger } from './logger';
 import { PaperExecutor } from './paper';
 import { calculateLiveAllocation, liveAllocationCalculator } from './sizing';
@@ -58,6 +58,30 @@ describe('live sizing', () => {
       feePerSide: config.backtest.feePerSide,
       slippagePerSide: config.backtest.slippagePerSide,
     }));
+  });
+});
+
+describe('live heartbeat publisher', () => {
+  test('times out a hung reconcile and allows the next heartbeat to publish', async () => {
+    const writes: string[] = [];
+    const publisher = createHeartbeatPublisher({
+      reconcile: () => new Promise<void>(() => {}),
+      timeoutMs: 5,
+      buildHeartbeat: () => minimalHeartbeat(),
+      saveHeartbeat: () => writes.push('heartbeat'),
+      buildHealth: () => ({ ok: true }),
+      writeHealth: () => writes.push('health'),
+      logHealth: () => writes.push('log'),
+      logHeartbeat: () => writes.push('print'),
+      clearLastError: () => writes.push('clear'),
+      recordError: (message) => writes.push(`error:${message}`),
+    });
+
+    await publisher.publish();
+    await publisher.publish();
+
+    expect(writes.filter((item) => item === 'heartbeat')).toHaveLength(2);
+    expect(writes.some((item) => item.includes('timed out'))).toBe(true);
   });
 });
 
@@ -407,6 +431,28 @@ function testCandle(index: number, open: number, high: number, low: number, clos
     low,
     close,
     volume: 100,
+  };
+}
+
+function minimalHeartbeat() {
+  return {
+    time: Date.now(),
+    startedAt: Date.now() - 1_000,
+    uptimeSeconds: 1,
+    socketHealthy: true,
+    secondsSinceLastMessage: 1,
+    closedCandlesByInterval: {},
+    lastClosedCandleByCoin: {},
+    signalsSeen: 0,
+    openPositions: 0,
+    lastAction: 'none',
+    lastError: null,
+    feedPath: 'WS' as const,
+    rawChannels: {},
+    lastRawChannel: null,
+    currentPriceByCoin: {},
+    lastSignalByCoin: {},
+    lastOrderAttemptByCoin: {},
   };
 }
 
