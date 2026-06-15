@@ -245,6 +245,26 @@ trader, it does not appear.** Show:
 - Do NOT merge candles and trade state into one file — keeping price data separate from the
   trading record is intentional and reduces confusion.
 
+### 8.5c Hermes monitoring surface
+
+Hermes (Nous Research agent) has **no formal app-monitoring contract** — it monitors an app by
+pointing a scheduled cron script at whatever stable, machine-readable output the app produces.
+So we just expose clean, stable surfaces:
+
+1. **Event JSONL log at a fixed path** (already specced in §4): `logs/trades-TESTNET.jsonl`,
+   append-only, one event per line, `eventId` cursor, stable `tradeId`. Keep the manifest at
+   `logs/trades-TESTNET.manifest.json` pointing at the active file. Do not move or rename these.
+2. **One status snapshot** for cheap "is it alive / what's it doing" polling — provide BOTH:
+   - `GET /api/status` returning the live testnet summary as JSON, AND
+   - `logs/status.json` rewritten on every heartbeat (so a cron script can read a file without
+     the web server).
+   Contents (numbers as numbers, timestamps epoch-ms):
+   `mode` (TESTNET), `tradeInterval` (5m), `heartbeatTs`, `secondsSinceHeartbeat`,
+   `socketHealthy`, `coins`, `openPositionsCount`, `equity`, `usedMargin`, `lastSignal`,
+   `lastOrderAttempt`, `lastError`, `signalsSeen`.
+- Stable file paths, stable JSON keys, no breaking renames — a Hermes cron script depends on
+  these staying put.
+
 ### 8.6 Acceptance criteria
 
 1. A single command starts monitor + web + trader (TESTNET, 5m, 10 coins) in one terminal and
@@ -255,7 +275,9 @@ trader, it does not appear.** Show:
 4. `packages/core` and `FIVE_MIN_TUNING` are unchanged; live 5m signals remain identical to the
    5m backtest.
 5. Event-based JSONL + text logs (§4) still written for TESTNET.
-6. `bun run check` passes.
+6. Hermes monitoring surface present (§8.5c): `GET /api/status` + `logs/status.json` rewritten
+   each heartbeat, with the listed fields; JSONL log + manifest at their fixed paths.
+7. `bun run check` passes.
 
 ### 8.6b How to verify TESTNET == 5m backtest (must hold after the work)
 
@@ -277,7 +299,8 @@ trader, it does not appear.** Show:
 2. Lock config to TESTNET/5m/enabled by default for the launcher.
 3. Strip the web app to the single testnet panel (§8.4); remove backtest/portfolio/PAPER views
    and their data fetching.
-4. Confirm the panel reads only live testnet state.
+4. Add the Hermes monitoring surface (§8.5c): `GET /api/status` + `logs/status.json` on each
+   heartbeat. Confirm the panel reads only live testnet state.
 5. Run `bun run check`; verify testnet still matches the 5m backtest (spot-check signals).
 6. Append a dated entry to §7 of this file describing what was done + verification.
 
@@ -286,6 +309,14 @@ trader, it does not appear.** Show:
 ## 7. Running change log (newest first)
 
 > Format: `### YYYY-MM-DD — short title` then a couple of bullets.
+
+### 2026-06-15 — Added Hermes monitoring surface to the spec
+- Checked official Nous Research Hermes docs: there is NO formal app-monitoring contract or
+  standard project `hermes.config.yaml`. Hermes monitors via a cron script reading whatever
+  stable output an app exposes (the laptop's hermes.config.yaml + watch script were bespoke).
+- Added §8.5c: keep the fixed-path event JSONL + manifest, and add a status snapshot exposed
+  BOTH as `GET /api/status` and `logs/status.json` (rewritten each heartbeat) with a defined
+  testnet summary, stable JSON keys/paths. Added matching acceptance criterion + build step.
 
 ### 2026-06-15 — Spec'd TESTNET-only simplification (for Codex)
 - Added §8: collapse the app to a single-purpose Hyperliquid **TESTNET live 5m** app — one
