@@ -714,9 +714,10 @@ export function totalAccountEquity(state: ClearinghouseState, spotState: unknown
     ?.find((balance) => balance.coin === 'USDC');
   const spotUsdc = numericOrNull(usdc?.total);
   const perpsValue = numericOrNull(state.marginSummary?.accountValue);
-  if (spotUsdc !== null || perpsValue !== null) {
-    return (spotUsdc ?? 0) + (perpsValue ?? 0);
-  }
+  // Hyperliquid's clearinghouse accountValue is the authoritative perps Total
+  // Equity and already includes margin locked by open positions.
+  if (perpsValue !== null) return perpsValue;
+  if (spotUsdc !== null) return spotUsdc;
   return config.portfolio.startingCapital;
 }
 

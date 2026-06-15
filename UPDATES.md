@@ -8,6 +8,10 @@ see at a glance what's been done and why — without reading every commit.
 
 ---
 
+## Documentation refresh (2026-06-15)
+
+- Rewrote `README.md` for the current Hermes-facing Hyperliquid TESTNET trader, including its runtime, strategy parity, execution safeguards, operator commands, live API, event stream, storage, dashboard, and read-only watchdog contract.
+
 ## Current app (2026-06-15)
 
 TrendBoss is now a single-purpose **Hyperliquid TESTNET live 5-minute trading app**.
@@ -75,6 +79,27 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
+
+### 2026-06-15 — Fixed panel equity double-count and TESTNET PnL drift
+- **Symptom:** dashboard/health equity showed **$962.70** while Hyperliquid testnet Portfolio
+  reported **Total Equity $884.56**. The gap (~$78) ≈ the open position's used margin (~$75).
+  The panel is effectively counting used margin on top of equity — but margin is already part of
+  equity (it is locked, not lost), so this double-counts and overstates the account.
+- **Where:** `packages/trader/testnet.ts` → `totalAccountEquity()` (~line 711) returns
+  `spotUsdc + perpsValue` (spot USDC `total` + `marginSummary.accountValue`). When the account
+  holds funds in BOTH the spot USDC bucket AND the perps wallet, summing them overstates the true
+  account value vs Hyperliquid's single reported Total Equity. The result flows into the reconcile
+  `equity` field (~line 303) → heartbeat / `logs/status.json` / `/health` / web panel.
+- **Fix:** total equity now uses clearinghouse `marginSummary.accountValue`, matching Hyperliquid's
+  perps Total Equity, and falls back to spot `USDC.total` only if clearinghouse value is absent.
+  It no longer adds both values and double-counts margin.
+- **PnL fix:** TESTNET positions retain the mark and unrealized PnL mirrored from clearinghouse
+  reconciliation; WebSocket mids and closed candles no longer overwrite them with local estimates.
+- **Constraint:** do NOT touch `packages/core` or `FIVE_MIN_TUNING` — this is reconcile/reporting
+  only, not strategy. Added focused regression coverage for both reporting paths.
+- **Verification:** `bun test packages/trader/trader.test.ts` passed with 16 tests and
+  `bun x tsc --noEmit` completed successfully. After restart, live `/health` reported one trader,
+  a current heartbeat, equity `$882.86`, used margin `$70.86`, and exchange WLD PnL `-$6.61`.
 
 ### 2026-06-15 — Consolidated TESTNET-only 5m application
 - Converted the running app to one purpose: live Hyperliquid TESTNET trading on 5m across all

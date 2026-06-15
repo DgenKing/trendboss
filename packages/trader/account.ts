@@ -34,6 +34,8 @@ export class TraderAccount {
   mark(coin: string, price: number) {
     const position = this.positions.get(coin);
     if (!position) return;
+    // TESTNET marks and PnL are mirrored from Hyperliquid during reconciliation.
+    if (position.mode === 'TESTNET') return;
     position.currentPrice = price;
     position.unrealizedPnl = markToMarket(position, price);
   }
@@ -142,6 +144,7 @@ export function realizedPnl(position: LivePosition, exitPrice: number): number {
 }
 
 export function updatePositionMark(position: LivePosition, candle: Candle): LivePosition {
+  if (position.mode === 'TESTNET') return position;
   const next = { ...position, currentPrice: candle.close };
   next.unrealizedPnl = markToMarket(next, candle.close);
   return next;

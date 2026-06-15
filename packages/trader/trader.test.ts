@@ -4,6 +4,7 @@ import { config } from '../../config';
 import { calculatePortfolioAllocation } from '../core/portfolio';
 import type { StrategyExit, StrategySignal } from '../core/strategy';
 import type { Candle } from '../core/types';
+import { TraderAccount, updatePositionMark } from './account';
 import { main } from './index';
 import { entryIndicators, TraderLogger } from './logger';
 import { PaperExecutor } from './paper';
@@ -118,16 +119,33 @@ describe('TESTNET rounding helpers', () => {
 });
 
 describe('TESTNET reconciliation helpers', () => {
-  test('sums spot USDC and perps account value for total equity', () => {
+  test('uses clearinghouse account value without adding spot USDC twice', () => {
     expect(totalAccountEquity(
       { marginSummary: { accountValue: '20.5' } } as any,
       { balances: [{ coin: 'USDC', total: '960.25' }] },
-    )).toBeCloseTo(980.75);
+    )).toBe(20.5);
     expect(totalAccountEquity(
       { marginSummary: { accountValue: '981' } } as any,
       { balances: [{ coin: 'USDC', total: '0' }] },
     )).toBe(981);
+    expect(totalAccountEquity(
+      { marginSummary: {} } as any,
+      { balances: [{ coin: 'USDC', total: '960.25' }] },
+    )).toBe(960.25);
     expect(totalAccountEquity({ marginSummary: {} } as any, { balances: [] })).toBe(config.portfolio.startingCapital);
+  });
+
+  test('does not replace exchange TESTNET mark and PnL with local feed prices', () => {
+    const position = testLivePosition({ currentPrice: 98.75, markPrice: 98.75, unrealizedPnl: -4.77 });
+    const account = new TraderAccount({ positions: [position] });
+
+    account.mark(position.coin, 99.5);
+    expect(account.positions.get(position.coin)?.currentPrice).toBe(98.75);
+    expect(account.positions.get(position.coin)?.unrealizedPnl).toBe(-4.77);
+
+    const candleMarked = updatePositionMark(position, testCandle(0, 99, 100, 98, 99.5));
+    expect(candleMarked.currentPrice).toBe(98.75);
+    expect(candleMarked.unrealizedPnl).toBe(-4.77);
   });
 
   test('uses latest closing fill time, not reconcile time, for exchange-flat trades', () => {
