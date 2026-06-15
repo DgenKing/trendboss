@@ -709,13 +709,33 @@ function weightedFillPrice(fills: UserFill[]): number | null {
 }
 
 export function totalAccountEquity(state: ClearinghouseState, spotState: unknown): number {
-  const usdc = (spotState as { balances?: Array<{ coin: string; total: string }> })
+  const usdc = (spotState as { balances?: Array<{ coin: string; total: string; hold?: string }> })
     .balances
     ?.find((balance) => balance.coin === 'USDC');
   const spotUsdc = numericOrNull(usdc?.total);
+  const spotHold = numericOrNull(usdc?.hold);
   const perpsValue = numericOrNull(state.marginSummary?.accountValue);
-  // Hyperliquid's clearinghouse accountValue is the authoritative perps Total
-  // Equity and already includes margin locked by open positions.
+  const usedMargin = numericOrNull(state.marginSummary?.totalMarginUsed);
+
+  // Some TESTNET isolated-margin accounts report marginSummary.accountValue as
+  // only the margin locked in open perps, while spot USDC total is the actual
+  // account equity and spot USDC hold mirrors totalMarginUsed. In that shape,
+  // returning accountValue makes equity equal used margin and causes false
+  // NO_MARGIN decisions. Prefer spot total when it clearly contains the held
+  // margin plus free collateral.
+  if (
+    spotUsdc !== null &&
+    perpsValue !== null &&
+    usedMargin !== null &&
+    spotUsdc > perpsValue &&
+    nearlyEqual(perpsValue, usedMargin) &&
+    (spotHold === null || nearlyEqual(spotHold, usedMargin))
+  ) {
+    return spotUsdc;
+  }
+
+  // Otherwise Hyperliquid's clearinghouse accountValue is authoritative for
+  // perps equity and may already include margin locked by open positions.
   if (perpsValue !== null) return perpsValue;
   if (spotUsdc !== null) return spotUsdc;
   return config.portfolio.startingCapital;
@@ -733,6 +753,10 @@ function numeric(value: unknown, fallback: number): number {
 function numericOrNull(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function nearlyEqual(a: number, b: number, tolerance = 1e-6): boolean {
+  return Math.abs(a - b) <= tolerance;
 }
 
 function sum(values: number[]): number {

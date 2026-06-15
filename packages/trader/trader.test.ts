@@ -135,6 +135,19 @@ describe('TESTNET reconciliation helpers', () => {
     expect(totalAccountEquity({ marginSummary: {} } as any, { balances: [] })).toBe(config.portfolio.startingCapital);
   });
 
+  test('uses spot USDC total when TESTNET isolated accountValue only reflects used margin', () => {
+    expect(totalAccountEquity(
+      {
+        marginSummary: {
+          accountValue: '249.057609',
+          totalMarginUsed: '249.057609',
+          totalRawUsd: '-1002.930524',
+        },
+      } as any,
+      { balances: [{ coin: 'USDC', total: '885.247089', hold: '249.057609' }] },
+    )).toBe(885.247089);
+  });
+
   test('does not replace exchange TESTNET mark and PnL with local feed prices', () => {
     const position = testLivePosition({ currentPrice: 98.75, markPrice: 98.75, unrealizedPnl: -4.77 });
     const account = new TraderAccount({ positions: [position] });
