@@ -729,7 +729,7 @@ export function totalAccountEquity(state: ClearinghouseState, spotState: unknown
     usedMargin !== null &&
     spotUsdc > perpsValue &&
     nearlyEqual(perpsValue, usedMargin) &&
-    (spotHold === null || nearlyEqual(spotHold, usedMargin))
+    (spotHold === null || nearlyEqual(spotHold, usedMargin, Math.max(1, usedMargin * 0.005)))
   ) {
     return spotUsdc;
   }

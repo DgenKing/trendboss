@@ -172,6 +172,19 @@ describe('TESTNET reconciliation helpers', () => {
     )).toBe(885.247089);
   });
 
+  test('tolerates small TESTNET spot hold drift when detecting isolated margin accountValue', () => {
+    expect(totalAccountEquity(
+      {
+        marginSummary: {
+          accountValue: '124.369509',
+          totalMarginUsed: '124.369509',
+          totalRawUsd: '-469.691619',
+        },
+      } as any,
+      { balances: [{ coin: 'USDC', total: '877.264258', hold: '124.340424' }] },
+    )).toBe(877.264258);
+  });
+
   test('does not replace exchange TESTNET mark and PnL with local feed prices', () => {
     const position = testLivePosition({ currentPrice: 98.75, markPrice: 98.75, unrealizedPnl: -4.77 });
     const account = new TraderAccount({ positions: [position] });
