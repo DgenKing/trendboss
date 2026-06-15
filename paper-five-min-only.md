@@ -247,6 +247,9 @@ trader, it does not appear.** Show:
 
 ### 8.5c Hermes monitoring surface
 
+> **Superseded/expanded by §8.8 (FINAL).** §8.8 is the controlling spec for the health
+> endpoint, event log, scripts, systemd, and watchdog. The notes below remain as background.
+
 Hermes (Nous Research agent) has **no formal app-monitoring contract** — it monitors an app by
 pointing a scheduled cron script at whatever stable, machine-readable output the app produces.
 So we just expose clean, stable surfaces:
@@ -275,9 +278,14 @@ So we just expose clean, stable surfaces:
 4. `packages/core` and `FIVE_MIN_TUNING` are unchanged; live 5m signals remain identical to the
    5m backtest.
 5. Event-based JSONL + text logs (§4) still written for TESTNET.
-6. Hermes monitoring surface present (§8.5c): `GET /api/status` + `logs/status.json` rewritten
-   each heartbeat, with the listed fields; JSONL log + manifest at their fixed paths.
-7. `bun run check` passes.
+6. Operational layer per §8.8: `GET :8787/health` returns strict JSON and `ok=false` on every
+   listed failure (incl. wrong mode + duplicate trader process); `logs/status.json` rewritten
+   each heartbeat; `logs/events.TESTNET.jsonl` (+ manifest) with the §8.8 event types;
+   `scripts/` + package scripts present; 3 systemd services with `Restart=always`; read-only
+   `hermes-watchdog.py` silent-when-healthy; web `:3000`, api `:8787`; `AGENTS.md` present.
+7. `bun run start` brings up web + api + trader together; `bun run status` shows all three.
+8. All 10 testnet coins traded; `/health` returns per-coin arrays (no hardcoded single symbol).
+9. `bun run check` passes.
 
 ### 8.6b How to verify TESTNET == 5m backtest (must hold after the work)
 
@@ -292,6 +300,58 @@ So we just expose clean, stable surfaces:
    SKIP with reason). A backtest trade with no matching live OPEN/SKIP = bug.
    (Note: signals/trades must match; exact P&L may differ due to real fills/slippage/rejects.)
 
+### 8.8 Operational layer (merged from Hermes agent recommendation) — FINAL
+
+Hermes' agent proposed a solid DevOps layer. Adopt it, **amended** so it does not break the two
+hard rules (reuse `packages/core`/`FIVE_MIN_TUNING`; strip, don't rebuild; keep 10 coins).
+
+**Reconciled decisions where Hermes conflicted with this spec:**
+- **STRIP, do not "rebuild from scratch."** Reuse the existing strategy engine and tuning. A
+  green-field rebuild is forbidden — it would re-implement the strategy and break backtest
+  parity (§8.1). This is the controlling instruction.
+- **Keep all 10 testnet coins** (not one symbol). Therefore `/health` and `status.json` return
+  per-coin **arrays** for price / position / last signal, plus portfolio-level equity/margin.
+  (BTC-only would be a one-line coin-list change if ever wanted — do NOT hardcode a single
+  symbol.)
+- **Event log filename:** standardize on `logs/events.TESTNET.jsonl` (Hermes' watchdog reads
+  this path). This supersedes the earlier `logs/trades-TESTNET.jsonl` name; keep the manifest
+  alongside it. All §4 event rules (eventId cursor, tradeId, JSON types) still apply.
+
+**`GET http://localhost:8787/health` — strict JSON.** Returns:
+`ok`, `mode` (TESTNET), `coins[]`, per-coin `price`, `lastClosed5mCandle`, `position`,
+`lastSignal`, `lastOrderAttempt`; plus `traderRunning`, `feedSocketStatus`, `heartbeatAgeSec`,
+`equity`, `usedMargin`, `lastError`. **`ok` MUST be false (health fails) if:** mode ≠ TESTNET,
+trader not running, feed stale, heartbeat stale, `trader.secret.ts` missing, or **more than one
+trader process is running.** Also keep `logs/status.json` rewritten each heartbeat with the same
+payload (file-based polling without the web server).
+
+**Event log — `logs/events.TESTNET.jsonl`**, one JSON object per line. Event types:
+`HEARTBEAT`, `SIGNAL`, `ORDER_ATTEMPT`, `OPEN`, `CLOSE`, `ERROR` (keep `SKIP` too — it carries
+the skip reason). OPEN keeps the full forensic payload (§4a).
+
+**Scripts (`scripts/`):** `install.sh`, `start.sh`, `stop.sh`, `status.sh`, `healthcheck.sh`,
+`hermes-watchdog.py`. **package scripts:** `install:app`, `start`, `stop`, `status`, `health`,
+`web`, `api`, `trader`. `bun run start` brings up web + api + trader together; `status` shows all
+three; `health` prints the `/health` JSON. `start.sh` must `mkdir -p data logs` and set
+`TRADER_DB_PATH=data/testnet.db`.
+
+**systemd (user) services** — `trendboss-testnet-web.service`, `-api.service`, `-trader.service`,
+each with `Restart=always`, `RestartSec=5`, `WorkingDirectory=<repo>`, and
+`Environment=APP_MODE=TESTNET HYPERLIQUID_ENV=TESTNET TRADE_INTERVAL=5m`. This is the real fix
+for "it keeps dying / I open too many terminals" — auto-restart + one `systemctl` command. (Note:
+for `--user` services to run without an active login, enable lingering: `loginctl enable-linger`.)
+
+**`scripts/hermes-watchdog.py` — READ-ONLY.** Polls `/health` and tails
+`logs/events.TESTNET.jsonl` from a remembered cursor (`last_event_id`). Prints **nothing** when
+healthy with no new noteworthy event; prints a short alert ONLY on `OPEN`, `CLOSE`, `ERROR`,
+stale heartbeat, a service down, wrong mode, or a duplicate trader process. It must never write
+to or restart the app.
+
+**Ports:** web on `:3000`, api/health on `:8787`.
+
+**AGENTS.md** at repo root: short operator guide — what the app is (TESTNET 5m only), the one
+command to start, where logs/health live, and the "no confusion" rule.
+
 ### 8.7 Plan / order of work for Codex
 
 1. Add the one-command launcher script (monitor + web + trader, env preset, `mkdir -p`,
@@ -299,8 +359,11 @@ So we just expose clean, stable surfaces:
 2. Lock config to TESTNET/5m/enabled by default for the launcher.
 3. Strip the web app to the single testnet panel (§8.4); remove backtest/portfolio/PAPER views
    and their data fetching.
-4. Add the Hermes monitoring surface (§8.5c): `GET /api/status` + `logs/status.json` on each
-   heartbeat. Confirm the panel reads only live testnet state.
+4. Build the §8.8 operational layer: `:8787/health` (strict JSON + all failure conditions),
+   `logs/status.json` per heartbeat, `logs/events.TESTNET.jsonl` with `HEARTBEAT`/`SIGNAL`/
+   `ORDER_ATTEMPT`/`OPEN`/`CLOSE`/`ERROR`/`SKIP`, the `scripts/` + package scripts, 3 systemd
+   services, read-only `hermes-watchdog.py`, and `AGENTS.md`. Confirm the panel reads only live
+   testnet state (per-coin arrays).
 5. Run `bun run check`; verify testnet still matches the 5m backtest (spot-check signals).
 6. Append a dated entry to §7 of this file describing what was done + verification.
 
@@ -309,6 +372,18 @@ So we just expose clean, stable surfaces:
 ## 7. Running change log (newest first)
 
 > Format: `### YYYY-MM-DD — short title` then a couple of bullets.
+
+### 2026-06-15 — FINAL spec: merged Hermes ops layer (§8.8) before Codex build
+- Reviewed Hermes agent's Codex recommendation. Adopted its ops layer: strict `:8787/health`
+  JSON with hard failure conditions (wrong mode, trader down, stale feed/heartbeat, missing
+  secret, duplicate trader process), 3 systemd services (`Restart=always`), `scripts/` +
+  package scripts, event types `HEARTBEAT`/`SIGNAL`/`ORDER_ATTEMPT`/`OPEN`/`CLOSE`/`ERROR`,
+  read-only silent-when-healthy `hermes-watchdog.py`, `AGENTS.md`, web `:3000` / api `:8787`.
+- **Amended Hermes' two conflicts:** (1) STRIP, do not rebuild from scratch — reuse
+  `packages/core` + `FIVE_MIN_TUNING` so testnet stays identical to the 5m backtest; (2) keep
+  all 10 coins, so `/health` returns per-coin arrays (no hardcoded single symbol).
+- Standardized event log path to `logs/events.TESTNET.jsonl`. Updated acceptance criteria +
+  build steps. This is the final spec before Codex builds.
 
 ### 2026-06-15 — Added Hermes monitoring surface to the spec
 - Checked official Nous Research Hermes docs: there is NO formal app-monitoring contract or
