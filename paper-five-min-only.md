@@ -165,9 +165,137 @@ text log is the human narrative.
 
 ---
 
+## 8. TESTNET-ONLY SIMPLIFICATION — Spec for Codex
+
+**Status:** Spec for Codex — not yet implemented.
+**Goal:** Remove all confusion from the app. It becomes a single-purpose **Hyperliquid
+TESTNET live 5m trading** app. One command starts everything. The web panel shows ONLY live
+testnet state. PAPER mode, backtest, and portfolio disappear from the running app and the UI.
+
+### 8.1 The single most important rule (do not break this)
+
+**TESTNET must trade EXACTLY the same as the 5m backtest.** This is already true because the
+live trader and the backtest share one strategy engine (`packages/core`) and one settings
+object (`FIVE_MIN_TUNING` in `config.ts`). Therefore:
+
+- **DO NOT delete or modify `packages/core`** (strategy, indicators, detect, levels, backtest).
+  That shared engine is exactly what guarantees testnet == backtest. Deleting it would break
+  the guarantee.
+- **DO NOT change `FIVE_MIN_TUNING` or any of its values.**
+- "Removing the backtest" means **removing it from the dashboard/UI only** — the backtest
+  ENGINE code stays in the repo so the live strategy stays identical and so it can still be
+  run on demand for validation.
+
+If live signals stop matching the 5m backtest after this work, that is a bug.
+
+### 8.2 Target scope
+
+- Runtime mode: **TESTNET only.** No PAPER path runs.
+- Exchange: **Hyperliquid testnet only.**
+- Timeframe: **5m only** (regime on 1h, as today).
+- Coins: **all 10 supported testnet coins** (BTC, ETH, SOL, BNB, HYPE, NEAR, WLD, TON, SUI,
+  DOGE).
+- **One web panel**, testnet-only.
+- **No** backtest tab, **no** portfolio tab, **no** PAPER view, **no** timeframe selector.
+
+### 8.3 One command runs everything
+
+- `bun run` (define a clear script, e.g. `bun start` / `bun run all`) must launch **all three**
+  processes together in one terminal: **monitor (feed + levels + API)**, **web (dashboard)**,
+  and **trader (TESTNET)**. No more opening separate terminals.
+- It must set the testnet/5m/enabled config automatically so the user does not pass env vars.
+- Use a single supervisor (a small `bun` launcher script, or a process manager like
+  `concurrently`) that starts the three, prefixes their logs, and shuts them all down together
+  on Ctrl+C.
+- Keep the existing `data/`/`logs/` auto-create so a fresh clone "just works" (the missing
+  `data/` folder is what broke the laptop start — the launcher must `mkdir -p data logs`).
+- The TESTNET DB path must be set to a fixed `data/testnet.db` by the launcher.
+
+### 8.4 The one dashboard page — fields only
+
+The panel reads **only** from the live TESTNET trader state/logs (DB + heartbeat + JSONL).
+No backtest, no portfolio, no PAPER. **No confusion rule: if it is not from the live TESTNET
+trader, it does not appear.** Show:
+
+- service status (trader/monitor/web up, mode = TESTNET)
+- heartbeat freshness (seconds since last heartbeat; stale warning)
+- per coin / overall: symbol, current price, last closed 5m candle time
+- current open position(s): entry, stop, target, size, margin, unrealized P&L, fees
+- last signal (per coin): time, direction, strategy, score
+- last order attempt + result (accepted / rejected + reason)
+- open & closed TESTNET trades with P&L
+- latest error
+
+### 8.5 What to remove / hide
+
+- Web UI: delete the Backtest, Portfolio, and any PAPER/timeframe-selector views/components and
+  their API calls. The dashboard becomes the single testnet panel above.
+- Monitor API: keep the endpoints the new panel needs (live testnet state, candles for price).
+  The backtest/portfolio endpoints may stay in code but must not be surfaced in the UI; if they
+  cause confusion they can be left unreferenced.
+- Config: hard-lock `trader.mode = TESTNET`, `tradeInterval = '5m'`, `enabled = true` for the
+  one-command launch (still allow an override if needed, but default to live testnet).
+
+### 8.5b Databases — two clean ones, delete the rest
+
+- **`data/monitor.db`** — candle store (price history the strategy needs). Keep.
+- **`data/testnet.db`** — live TESTNET trade state (positions, fills, closed trades, equity,
+  decisions). Keep. The launcher sets `TRADER_DB_PATH=data/testnet.db`.
+- **Delete `data/trader.db`** — dead PAPER-era mixed-mode file; it is a source of confusion.
+- Do NOT merge candles and trade state into one file — keeping price data separate from the
+  trading record is intentional and reduces confusion.
+
+### 8.6 Acceptance criteria
+
+1. A single command starts monitor + web + trader (TESTNET, 5m, 10 coins) in one terminal and
+   stops them all on Ctrl+C.
+2. Fresh clone works without manual `mkdir` (launcher creates `data/`+`logs/`).
+3. The dashboard shows ONLY live testnet fields from §8.4; no backtest/portfolio/PAPER anywhere
+   in the UI.
+4. `packages/core` and `FIVE_MIN_TUNING` are unchanged; live 5m signals remain identical to the
+   5m backtest.
+5. Event-based JSONL + text logs (§4) still written for TESTNET.
+6. `bun run check` passes.
+
+### 8.6b How to verify TESTNET == 5m backtest (must hold after the work)
+
+1. **Startup receipt:** the trader logs `[trader] live tuning override:` showing the 5m values
+   (`adxThreshold:38, rangeMaxAdx:16, rangeMinScore:80, touchTolerance:0.0006,
+   confirmWithinCandles:3, breakoutLookback:80, rsiLongMin:62, rsiShortMax:38,
+   targetR range:2.4/trend:2.2`). Different numbers = divergence.
+2. **Shared source:** confirm both the backtest path and the trader read `FIVE_MIN_TUNING`
+   and `packages/core` (no second strategy/tuning copy introduced).
+3. **Trade-by-trade:** run the 5m backtest over a recent window; for each backtest trade on a
+   testnet coin at a 5m timestamp, the live TESTNET JSONL must show the same OPEN (or a logged
+   SKIP with reason). A backtest trade with no matching live OPEN/SKIP = bug.
+   (Note: signals/trades must match; exact P&L may differ due to real fills/slippage/rejects.)
+
+### 8.7 Plan / order of work for Codex
+
+1. Add the one-command launcher script (monitor + web + trader, env preset, `mkdir -p`,
+   unified shutdown). Verify it starts all three.
+2. Lock config to TESTNET/5m/enabled by default for the launcher.
+3. Strip the web app to the single testnet panel (§8.4); remove backtest/portfolio/PAPER views
+   and their data fetching.
+4. Confirm the panel reads only live testnet state.
+5. Run `bun run check`; verify testnet still matches the 5m backtest (spot-check signals).
+6. Append a dated entry to §7 of this file describing what was done + verification.
+
+---
+
 ## 7. Running change log (newest first)
 
 > Format: `### YYYY-MM-DD — short title` then a couple of bullets.
+
+### 2026-06-15 — Spec'd TESTNET-only simplification (for Codex)
+- Added §8: collapse the app to a single-purpose Hyperliquid **TESTNET live 5m** app — one
+  command starts monitor+web+trader, one testnet-only dashboard, no PAPER/backtest/portfolio in
+  the UI.
+- Hard rule preserved: **testnet must trade identically to the 5m backtest**, so `packages/core`
+  and `FIVE_MIN_TUNING` stay untouched (backtest ENGINE kept in repo; only removed from the UI).
+- All 10 testnet coins kept. Defined the dashboard field list, the "no confusion" rule, the
+  one-command launcher requirements, acceptance criteria, and Codex's order of work. Not yet
+  implemented.
 
 ### 2026-06-10 — Implemented event-based trader logs
 - Added `packages/trader/logger.ts` with safe append-only JSONL event logging at
