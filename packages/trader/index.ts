@@ -4,14 +4,20 @@ import { computeLevels } from '../core/levels';
 import { RegimeAwareStrategyEngine } from '../core/strategy';
 import type { Candle, Levels, MarketEvent } from '../core/types';
 import { TraderAccount, updatePositionMark } from './account';
-import { PaperExecutor } from './paper';
 import { calculateLiveAllocation } from './sizing';
 import { TraderFeed } from './feed';
 import { entryIndicators, TraderLogger } from './logger';
 import { TraderStore } from './store';
 import { TestnetExecutor } from './testnet';
-import type { CandleFeedSource, Executor, LiveDecision, LiveHeartbeat } from './types';
-import { runPaperDemo } from './paper-demo';
+import { buildHealthPayload, writeHealthSnapshot } from './health';
+import type {
+  CandleFeedSource,
+  Executor,
+  LiveDecision,
+  LiveHeartbeat,
+  LiveOrderAttemptSummary,
+  LiveSignalSummary,
+} from './types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -22,6 +28,9 @@ export class LiveTrader {
   private signalsSeen = 0;
   private lastAction = 'none';
   private lastError: string | null = null;
+  private readonly currentPriceByCoin = new Map<string, number>();
+  private readonly lastSignalByCoin = new Map<string, LiveSignalSummary>();
+  private readonly lastOrderAttemptByCoin = new Map<string, LiveOrderAttemptSummary>();
 
   constructor(
     private readonly store: TraderStore,
@@ -31,6 +40,15 @@ export class LiveTrader {
   ) {
     for (const coin of config.trader.coins) {
       this.engines.set(coin, new RegimeAwareStrategyEngine());
+    }
+    const previousHeartbeat = store.getLiveState().heartbeat;
+    for (const coin of config.trader.coins) {
+      const price = previousHeartbeat?.currentPriceByCoin?.[coin];
+      const signal = previousHeartbeat?.lastSignalByCoin?.[coin];
+      const orderAttempt = previousHeartbeat?.lastOrderAttemptByCoin?.[coin];
+      if (price !== null && price !== undefined) this.currentPriceByCoin.set(coin, price);
+      if (signal) this.lastSignalByCoin.set(coin, signal);
+      if (orderAttempt) this.lastOrderAttemptByCoin.set(coin, orderAttempt);
     }
   }
 
@@ -108,6 +126,15 @@ export class LiveTrader {
       this.lastAction = `signal ${coin} x${update.signals.length}`;
     }
     for (const signal of update.signals) {
+      this.lastSignalByCoin.set(signal.coin, {
+        time: signal.candleCloseTime,
+        direction: signal.direction,
+        strategy: signal.strategy,
+        score: signal.score ?? 0,
+        entry: signal.entry,
+        stop: signal.stop,
+        target: signal.target,
+      });
       this.logger.signal(signal, indicators, candle);
     }
 
@@ -168,12 +195,23 @@ export class LiveTrader {
         this.resetEngine(coin);
         continue;
       }
+      Object.assign(result.position, this.logger.identities(signal, result.position));
+      this.lastOrderAttemptByCoin.set(signal.coin, {
+        time: Date.now(),
+        direction: signal.direction,
+        strategy: signal.strategy,
+        status: 'ACCEPTED',
+        reason: 'OPENED',
+        margin: result.position.margin,
+        notional: result.position.notional,
+      });
       this.account.open(result.position);
       this.store.upsertPosition(result.position);
       if (result.fill) {
         this.store.saveFill(result.fill);
         this.logger.fill(result.fill);
       }
+      this.logger.orderAccepted(signal, result.position);
       this.logger.tradeOpened({
         signal,
         position: result.position,
@@ -219,6 +257,15 @@ export class LiveTrader {
 
   private saveDecision(decision: LiveDecision, signal?: Parameters<TraderLogger['decision']>[1]) {
     this.store.saveDecision(decision);
+    this.lastOrderAttemptByCoin.set(decision.coin, {
+      time: Date.now(),
+      direction: decision.direction,
+      strategy: decision.strategy,
+      status: decision.status,
+      reason: decision.reason,
+      margin: decision.margin,
+      notional: decision.notional,
+    });
     this.logger.decision(decision, signal);
   }
 
@@ -275,12 +322,27 @@ export class LiveTrader {
   clearLastError() {
     this.lastError = null;
   }
+
+  recordPrice(coin: string, price: number) {
+    this.currentPriceByCoin.set(coin, price);
+  }
+
+  priceSnapshot() {
+    return Object.fromEntries(config.trader.coins.map((coin) => [coin, this.currentPriceByCoin.get(coin) ?? null]));
+  }
+
+  signalSnapshot() {
+    return Object.fromEntries(config.trader.coins.map((coin) => [coin, this.lastSignalByCoin.get(coin) ?? null]));
+  }
+
+  orderAttemptSnapshot() {
+    return Object.fromEntries(config.trader.coins.map((coin) => [coin, this.lastOrderAttemptByCoin.get(coin) ?? null]));
+  }
 }
 
 export async function main() {
-  if (process.argv.includes('--demo-paper')) {
-    await runPaperDemo();
-    return;
+  if (config.trader.mode !== 'TESTNET') {
+    throw new Error(`TrendBoss is TESTNET-only; refusing mode ${config.trader.mode}.`);
   }
   if (config.trader.tradeInterval !== '5m') {
     throw new Error('Trader supports 5m only.');
@@ -300,13 +362,14 @@ export async function main() {
     realizedBalance: store.getLatestEquityPoint()?.realizedBalance,
     positions: store.getOpenPositions(),
   });
-  const executor = config.trader.mode === 'TESTNET'
-    ? await TestnetExecutor.create()
-    : new PaperExecutor();
+  const executor = await TestnetExecutor.create();
   const trader = new LiveTrader(store, account, executor, logger);
   const feed = new TraderFeed(store, {
     onClosedCandle: (coin, interval, candle, source) => trader.handleClosedCandle(coin, interval, candle, source),
-    onCurrentPrice: (coin, price) => account.mark(coin, price),
+    onCurrentPrice: (coin, price) => {
+      account.mark(coin, price);
+      trader.recordPrice(coin, price);
+    },
     onHealth: (heartbeat) => store.saveHeartbeat(enrichedHeartbeat(heartbeat, trader, account)),
     onLog: (message) => console.log(message),
   });
@@ -327,11 +390,29 @@ export async function main() {
       trader.clearLastError();
       const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
       store.saveHeartbeat(heartbeat);
+      const health = buildHealthPayload({
+        heartbeat,
+        positions: [...account.positions.values()],
+        equity: account.equity(),
+        usedMargin: account.usedMargin(),
+        lastError: trader.lastErrorText(),
+      });
+      writeHealthSnapshot(health);
+      logger.heartbeat(health);
       logHeartbeat(heartbeat);
     } catch (error) {
       trader.recordExternalError(`reconcile: ${errorMessage(error)}`);
       const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
       store.saveHeartbeat(heartbeat);
+      const health = buildHealthPayload({
+        heartbeat,
+        positions: [...account.positions.values()],
+        equity: account.equity(),
+        usedMargin: account.usedMargin(),
+        lastError: trader.lastErrorText(),
+      });
+      writeHealthSnapshot(health);
+      logger.heartbeat(health);
       logHeartbeat(heartbeat);
     } finally {
       heartbeatRunning = false;
@@ -342,13 +423,15 @@ export async function main() {
   }, config.trader.heartbeatSeconds * 1000);
   await publishHeartbeat();
 
-  process.on('SIGINT', () => {
+  const shutdown = () => {
     clearInterval(heartbeatTimer);
     feed.stop();
     store.close();
     logger.restoreConsole();
     process.exit(0);
-  });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 function enrichedHeartbeat(
@@ -362,6 +445,9 @@ function enrichedHeartbeat(
     openPositions: account.positions.size,
     lastAction: trader.lastActionText(),
     lastError: trader.lastErrorText(),
+    currentPriceByCoin: trader.priceSnapshot(),
+    lastSignalByCoin: trader.signalSnapshot(),
+    lastOrderAttemptByCoin: trader.orderAttemptSnapshot(),
   };
 }
 

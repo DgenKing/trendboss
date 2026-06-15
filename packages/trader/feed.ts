@@ -59,7 +59,11 @@ export class TraderFeed {
   constructor(
     private readonly store: TraderStore,
     private readonly handlers: TraderFeedHandlers,
-  ) {}
+  ) {
+    for (const coin of config.trader.coins) {
+      this.lastClosedCandleByCoin[coin] = store.getLastCandleTime(coin, config.trader.tradeInterval);
+    }
+  }
 
   async backfillStartup() {
     for (const interval of traderIntervals()) {
@@ -101,6 +105,9 @@ export class TraderFeed {
       feedPath: this.activeFeedPath(),
       rawChannels: Object.fromEntries(this.rawChannels),
       lastRawChannel: this.lastRawChannel,
+      currentPriceByCoin: Object.fromEntries(config.trader.coins.map((coin) => [coin, null])),
+      lastSignalByCoin: Object.fromEntries(config.trader.coins.map((coin) => [coin, null])),
+      lastOrderAttemptByCoin: Object.fromEntries(config.trader.coins.map((coin) => [coin, null])),
     };
   }
 
@@ -380,6 +387,11 @@ export class TraderFeed {
       endTime,
     })).filter((candle) => candle.closeTime <= Date.now());
     this.store.saveCandles(coin, interval, candles);
+    if (interval === config.trader.tradeInterval && candles.length > 0) {
+      const latest = candles.at(-1)!;
+      this.lastClosedCandleByCoin[coin] = latest.closeTime;
+      this.handlers.onCurrentPrice(coin, latest.close);
+    }
     this.handlers.onLog?.(
       `[trader] Backfilled ${coin} ${interval}: saved ${candles.length}, cached ${this.store.countCandles(coin, interval)}/${target}`,
     );

@@ -3,11 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test packages/core/core.test.ts packages/trader/trader.test.ts",
-    "monitor": "bun run free-port && bun run packages/monitor/index.ts",
+    "install:app": "bash scripts/install.sh",
+    "start": "bash scripts/start.sh",
+    "stop": "bash scripts/stop.sh",
+    "status": "bash scripts/status.sh",
+    "health": "bash scripts/healthcheck.sh",
+    "web": "cd packages/web && bun run dev -- --port 3000",
+    "api": "bun run packages/monitor/index.ts",
     "trader": "bun run packages/trader/index.ts",
-    "free-port": "lsof -ti tcp:8787 | xargs -r kill -9 2>/dev/null; sleep 0.3; true",
-    "web": "cd packages/web && bun run dev",
+    "test": "bun test packages/core/core.test.ts packages/trader/trader.test.ts",
     "check": "bun test packages/core/core.test.ts packages/trader/trader.test.ts && bunx tsc --noEmit"
   },
   "workspaces": [

@@ -630,6 +630,9 @@ function mirrorExchangePosition(params: {
     fees,
     stopOrderId: oidText(protective.stop?.oid) ?? local?.stopOrderId ?? null,
     targetOrderId: oidText(protective.target?.oid) ?? local?.targetOrderId ?? null,
+    tradeId: local?.tradeId ?? null,
+    signalId: local?.signalId ?? null,
+    positionId: local?.positionId ?? null,
   };
 }
 

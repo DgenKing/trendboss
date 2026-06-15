@@ -13,16 +13,20 @@ import type {
 
 export class TraderStore {
   private db: Database;
+  private candleDb: Database;
 
-  constructor(dbPath = config.trader.dbPath) {
+  constructor(dbPath = config.trader.dbPath, candleDbPath?: string) {
+    const resolvedCandleDbPath = candleDbPath ?? (dbPath === config.trader.dbPath ? config.dbPath : `${dbPath}.candles`);
     this.db = new Database(dbPath);
+    this.candleDb = new Database(resolvedCandleDbPath);
     this.db.exec('PRAGMA journal_mode = WAL;');
+    this.candleDb.exec('PRAGMA journal_mode = WAL;');
     this.migrate();
   }
 
   saveCandles(coin: string, interval: string, candles: Candle[]) {
-    const stmt = this.db.prepare(`
-      INSERT INTO trader_candles
+    const stmt = this.candleDb.prepare(`
+      INSERT INTO candles
         (coin, interval, openTime, closeTime, open, high, low, close, volume)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(coin, interval, openTime) DO UPDATE SET
@@ -33,7 +37,7 @@ export class TraderStore {
         close = excluded.close,
         volume = excluded.volume
     `);
-    const tx = this.db.transaction((rows: Candle[]) => {
+    const tx = this.candleDb.transaction((rows: Candle[]) => {
       for (const candle of rows) {
         stmt.run(
           coin,
@@ -52,9 +56,9 @@ export class TraderStore {
   }
 
   getRecentCandles(coin: string, interval: string, limit: number): Candle[] {
-    const rows = this.db.query(`
+    const rows = this.candleDb.query(`
       SELECT openTime, closeTime, open, high, low, close, volume
-      FROM trader_candles
+      FROM candles
       WHERE coin = ? AND interval = ?
       ORDER BY openTime DESC
       LIMIT ?
@@ -63,9 +67,9 @@ export class TraderStore {
   }
 
   getLastCandleTime(coin: string, interval: string): number | null {
-    const row = this.db.query(`
+    const row = this.candleDb.query(`
       SELECT closeTime
-      FROM trader_candles
+      FROM candles
       WHERE coin = ? AND interval = ?
       ORDER BY openTime DESC
       LIMIT 1
@@ -74,9 +78,9 @@ export class TraderStore {
   }
 
   countCandles(coin: string, interval: string): number {
-    const row = this.db.query(`
+    const row = this.candleDb.query(`
       SELECT COUNT(*) AS count
-      FROM trader_candles
+      FROM candles
       WHERE coin = ? AND interval = ?
     `).get(coin, interval) as { count: number } | null;
     return row?.count ?? 0;
@@ -131,8 +135,9 @@ export class TraderStore {
       INSERT INTO live_positions
         (coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
          score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
-         unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId,
+         tradeId, signalId, positionId, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(coin) DO UPDATE SET
         mode = excluded.mode,
         direction = excluded.direction,
@@ -155,6 +160,9 @@ export class TraderStore {
         fees = excluded.fees,
         stopOrderId = excluded.stopOrderId,
         targetOrderId = excluded.targetOrderId,
+        tradeId = excluded.tradeId,
+        signalId = excluded.signalId,
+        positionId = excluded.positionId,
         updatedAt = excluded.updatedAt
     `).run(...positionParams(position), Date.now());
   }
@@ -168,9 +176,10 @@ export class TraderStore {
       INSERT INTO live_closed_trades
         (coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
          score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
-         unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId, exitTime, exitPrice, exitReason,
+         unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId,
+         tradeId, signalId, positionId, exitTime, exitPrice, exitReason,
          pnl, returnOnMargin, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(...positionParams(trade), trade.exitTime, trade.exitPrice, trade.exitReason, trade.pnl, trade.returnOnMargin, Date.now());
   }
 
@@ -218,7 +227,8 @@ export class TraderStore {
     return this.db.query(`
       SELECT coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
              score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
-             unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId
+             unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId,
+             tradeId, signalId, positionId
       FROM live_positions
       ORDER BY entryTime ASC
     `).all() as LivePosition[];
@@ -266,7 +276,8 @@ export class TraderStore {
       closedTrades: this.db.query(`
         SELECT coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
                score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
-               unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId, exitTime, exitPrice, exitReason,
+               unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId,
+               tradeId, signalId, positionId, exitTime, exitPrice, exitReason,
                pnl, returnOnMargin
         FROM live_closed_trades
         ORDER BY exitTime DESC
@@ -290,22 +301,12 @@ export class TraderStore {
 
   close() {
     this.db.close();
+    this.candleDb.close();
   }
 
   private migrate() {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS trader_candles (
-        coin TEXT,
-        interval TEXT,
-        openTime INTEGER,
-        closeTime INTEGER,
-        open REAL,
-        high REAL,
-        low REAL,
-        close REAL,
-        volume REAL,
-        PRIMARY KEY (coin, interval, openTime)
-      );
+      DROP TABLE IF EXISTS trader_candles;
 
       CREATE TABLE IF NOT EXISTS live_positions (
         coin TEXT PRIMARY KEY,
@@ -330,6 +331,9 @@ export class TraderStore {
         fees REAL DEFAULT 0,
         stopOrderId TEXT,
         targetOrderId TEXT,
+        tradeId TEXT,
+        signalId TEXT,
+        positionId TEXT,
         updatedAt INTEGER
       );
 
@@ -357,6 +361,9 @@ export class TraderStore {
         fees REAL DEFAULT 0,
         stopOrderId TEXT,
         targetOrderId TEXT,
+        tradeId TEXT,
+        signalId TEXT,
+        positionId TEXT,
         exitTime INTEGER,
         exitPrice REAL,
         exitReason TEXT,
@@ -413,12 +420,32 @@ export class TraderStore {
         value TEXT
       );
     `);
+    this.candleDb.exec(`
+      CREATE TABLE IF NOT EXISTS candles (
+        coin TEXT,
+        interval TEXT,
+        openTime INTEGER,
+        closeTime INTEGER,
+        open REAL,
+        high REAL,
+        low REAL,
+        close REAL,
+        volume REAL,
+        PRIMARY KEY (coin, interval, openTime)
+      );
+    `);
     this.addColumn('live_positions', 'markPrice', 'REAL');
     this.addColumn('live_positions', 'liquidationPrice', 'REAL');
     this.addColumn('live_positions', 'fees', 'REAL DEFAULT 0');
+    this.addColumn('live_positions', 'tradeId', 'TEXT');
+    this.addColumn('live_positions', 'signalId', 'TEXT');
+    this.addColumn('live_positions', 'positionId', 'TEXT');
     this.addColumn('live_closed_trades', 'markPrice', 'REAL');
     this.addColumn('live_closed_trades', 'liquidationPrice', 'REAL');
     this.addColumn('live_closed_trades', 'fees', 'REAL DEFAULT 0');
+    this.addColumn('live_closed_trades', 'tradeId', 'TEXT');
+    this.addColumn('live_closed_trades', 'signalId', 'TEXT');
+    this.addColumn('live_closed_trades', 'positionId', 'TEXT');
   }
 
   private addColumn(table: string, column: string, definition: string) {
@@ -464,5 +491,8 @@ function positionParams(position: LivePosition): SqlValue[] {
     position.fees ?? 0,
     position.stopOrderId ?? null,
     position.targetOrderId ?? null,
+    position.tradeId ?? null,
+    position.signalId ?? null,
+    position.positionId ?? null,
   ];
 }

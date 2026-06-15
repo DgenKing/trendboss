@@ -6,9 +6,10 @@ import type { IndicatorSnapshot } from '../core/indicators';
 import type { StrategySignal } from '../core/strategy';
 import type { Candle, Direction, StrategyName } from '../core/types';
 import type { LiveClosedTrade, LiveDecision, LiveFill, LivePosition } from './types';
+import type { HealthPayload } from './health';
 
 type ConsoleMethod = (...args: unknown[]) => void;
-type TradeEventType = 'OPEN' | 'CLOSE' | 'SKIP' | 'ERROR' | 'UPDATE';
+type TradeEventType = 'HEARTBEAT' | 'SIGNAL' | 'ORDER_ATTEMPT' | 'OPEN' | 'CLOSE' | 'ERROR' | 'SKIP';
 
 export type EntryIndicators = {
   adx: number | null;
@@ -75,6 +76,7 @@ export class TraderLogger {
   private readonly textLogPrefix: string;
   private readonly openContexts = new Map<string, StoredTradeContext>();
   private readonly tradeIdsBySignal = new Map<string, string>();
+  private readonly heartbeatTradeId = randomUUID();
   private nextEventId: number;
   private originalLog: ConsoleMethod | null = null;
   private originalError: ConsoleMethod | null = null;
@@ -82,8 +84,8 @@ export class TraderLogger {
   private writingConsole = false;
 
   constructor(private readonly mode: TraderMode = config.trader.mode, logDir = LOG_DIR) {
-    this.tradeLogPath = `${logDir}/trades-${mode}.jsonl`;
-    this.manifestPath = `${logDir}/trades-${mode}.manifest.json`;
+    this.tradeLogPath = mode === 'TESTNET' ? `${logDir}/events.TESTNET.jsonl` : `${logDir}/trades-PAPER.jsonl`;
+    this.manifestPath = mode === 'TESTNET' ? `${logDir}/events.TESTNET.manifest.json` : `${logDir}/trades-PAPER.manifest.json`;
     this.textLogPrefix = `${logDir}/${mode}`;
     this.nextEventId = loadNextEventId(this.tradeLogPath);
     this.writeManifest();
@@ -116,13 +118,38 @@ export class TraderLogger {
   }
 
   signal(signal: StrategySignal, indicators: EntryIndicators, candle: Candle) {
+    const id = signalId(signal);
+    const tradeId = this.tradeIdsBySignal.get(id) ?? randomUUID();
+    this.tradeIdsBySignal.set(id, tradeId);
     this.text(`[signal] ${signal.coin} ${signal.direction} ${signal.strategy} score=${signal.score ?? 0}`, {
-      signalId: signalId(signal),
+      signalId: id,
       levelName: signal.levelName,
       levelPrice: signal.levelPrice,
       regime: signal.regime,
       indicators,
       candle,
+    });
+    this.appendEvent({
+      event: 'SIGNAL',
+      tradeId,
+      symbol: signal.coin,
+      direction: signal.direction,
+      strategy: signal.strategy,
+      status: 'GENERATED',
+      price: signal.entry,
+      size: null,
+      stop: signal.stop,
+      target: signal.target,
+      reason: 'STRATEGY_SIGNAL',
+      signalId: id,
+      payload: {
+        score: signal.score ?? 0,
+        levelName: signal.levelName,
+        levelPrice: signal.levelPrice,
+        regime: signal.regime,
+        indicators,
+        candle,
+      },
     });
   }
 
@@ -130,10 +157,33 @@ export class TraderLogger {
     this.text(
       `[decision] ${decision.coin} ${decision.status} ${decision.reason} score=${decision.score} margin=${decision.margin.toFixed(2)} notional=${decision.notional.toFixed(2)}`,
     );
-    if (decision.status !== 'SKIPPED') return;
     const id = signal ? signalId(signal) : `${decision.coin}:${decision.time}:${decision.direction}:${decision.strategy}`;
     const tradeId = this.tradeIdsBySignal.get(id) ?? randomUUID();
     this.tradeIdsBySignal.set(id, tradeId);
+    if (this.mode === 'TESTNET') {
+      this.appendEvent({
+        event: 'ORDER_ATTEMPT',
+        tradeId,
+        symbol: decision.coin,
+        direction: decision.direction,
+        strategy: decision.strategy,
+        status: decision.status,
+        price: signal?.entry ?? null,
+        size: null,
+        stop: signal?.stop ?? null,
+        target: signal?.target ?? null,
+        reason: decision.reason,
+        signalId: id,
+        payload: {
+          score: decision.score,
+          margin: decision.margin,
+          notional: decision.notional,
+          allocationPct: decision.allocationPct,
+          riskAtStop: decision.riskAtStop,
+        },
+      });
+    }
+    if (decision.status !== 'SKIPPED' && decision.status !== 'REJECTED') return;
     this.appendEvent({
       event: 'SKIP',
       tradeId,
@@ -156,6 +206,64 @@ export class TraderLogger {
         riskAtStop: decision.riskAtStop,
         levelName: signal?.levelName ?? null,
         levelPrice: signal?.levelPrice ?? null,
+      },
+    });
+  }
+
+  orderAccepted(signal: StrategySignal, position: LivePosition) {
+    const id = signalId(signal);
+    const tradeId = position.tradeId ?? this.tradeIdsBySignal.get(id) ?? randomUUID();
+    this.tradeIdsBySignal.set(id, tradeId);
+    this.appendEvent({
+      event: 'ORDER_ATTEMPT',
+      tradeId,
+      symbol: position.coin,
+      direction: position.direction,
+      strategy: position.strategy,
+      status: 'ACCEPTED',
+      price: position.entry,
+      size: position.quantity,
+      stop: position.stop,
+      target: position.target,
+      reason: 'OPENED',
+      signalId: id,
+      positionId: position.positionId ?? null,
+      payload: {
+        margin: position.margin,
+        notional: position.notional,
+        allocationPct: position.allocationPct,
+        riskAtStop: position.riskAtStop,
+      },
+    });
+  }
+
+  identities(signal: StrategySignal, position: LivePosition) {
+    const id = signalId(signal);
+    const tradeId = this.tradeIdsBySignal.get(id) ?? randomUUID();
+    this.tradeIdsBySignal.set(id, tradeId);
+    return {
+      tradeId,
+      signalId: id,
+      positionId: position.positionId ?? positionId(position),
+    };
+  }
+
+  heartbeat(payload: HealthPayload) {
+    this.appendEvent({
+      event: 'HEARTBEAT',
+      tradeId: this.heartbeatTradeId,
+      symbol: null,
+      status: payload.ok ? 'HEALTHY' : 'UNHEALTHY',
+      reason: payload.ok ? 'HEARTBEAT' : payload.lastError ?? 'HEALTH_CHECK_FAILED',
+      payload: {
+        mode: payload.mode,
+        traderRunning: payload.traderRunning,
+        traderProcessCount: payload.traderProcessCount,
+        feedSocketStatus: payload.feedSocketStatus,
+        heartbeatAgeSec: payload.heartbeatAgeSec,
+        equity: payload.equity,
+        usedMargin: payload.usedMargin,
+        secretPresent: payload.secretPresent,
       },
     });
   }
@@ -195,13 +303,13 @@ export class TraderLogger {
 
   tradeOpened(context: OpenTradeContext) {
     const id = signalId(context.signal);
-    const tradeId = this.tradeIdsBySignal.get(id) ?? randomUUID();
+    const tradeId = context.position.tradeId ?? this.tradeIdsBySignal.get(id) ?? randomUUID();
     this.tradeIdsBySignal.set(id, tradeId);
     const stored: StoredTradeContext = {
       ...context,
       tradeId,
-      signalId: id,
-      positionId: positionId(context.position),
+      signalId: context.position.signalId ?? id,
+      positionId: context.position.positionId ?? positionId(context.position),
       openedAt: Date.now(),
     };
     this.openContexts.set(context.position.coin, stored);
@@ -214,28 +322,12 @@ export class TraderLogger {
     this.appendEvent(closeEvent(context, closedTrade, exitFee ?? Math.max(0, (closedTrade.fees ?? 0) - context.entryFee)));
   }
 
-  update(message: string, payload: Record<string, unknown> = {}) {
-    this.appendEvent({
-      event: 'UPDATE',
-      tradeId: randomUUID(),
-      symbol: null,
-      direction: null,
-      strategy: null,
-      status: 'OK',
-      price: null,
-      size: null,
-      stop: null,
-      target: null,
-      reason: message,
-      payload,
-    });
-  }
-
   private appendEvent(input: EventInput) {
     const ts = Date.now();
     const record = {
       eventId: this.nextEventId++,
       ts,
+      type: input.event,
       event: input.event,
       tradeId: input.tradeId ?? randomUUID(),
       symbol: input.symbol,
@@ -260,8 +352,10 @@ export class TraderLogger {
       exchangeOrderId: input.exchangeOrderId ?? null,
       positionId: input.positionId ?? null,
       ...(input.payload ?? {}),
+      mode: this.mode,
     };
     this.safeWrite(this.tradeLogPath, `${safeStringify(record)}\n`);
+    this.writeManifest();
   }
 
   private writeTextLine(message: string) {
@@ -452,7 +546,7 @@ function contextFromClosedTrade(closedTrade: LiveClosedTrade): StoredTradeContex
     regime: closedTrade.regime,
     notified: false,
   } satisfies StrategySignal;
-  const tradeId = randomUUID();
+  const tradeId = closedTrade.tradeId ?? randomUUID();
   return {
     signal,
     position: closedTrade,
@@ -472,8 +566,8 @@ function contextFromClosedTrade(closedTrade: LiveClosedTrade): StoredTradeContex
     openPositionsCount: 0,
     entryFee: closedTrade.fees ?? 0,
     tradeId,
-    signalId: signalId(signal),
-    positionId: positionId(closedTrade),
+    signalId: closedTrade.signalId ?? signalId(signal),
+    positionId: closedTrade.positionId ?? positionId(closedTrade),
     openedAt: closedTrade.entryTime,
   };
 }

@@ -3,10 +3,27 @@
 A plain-English log of what's changed on this project, so anyone picking it up can
 see at a glance what's been done and why — without reading every commit.
 
-**Branch:** `benclawbot-version`
+**Branch:** `paper-5min-only`
 **Compared against:** the original `master` branch.
 
 ---
+
+## Current app (2026-06-15)
+
+TrendBoss is now a single-purpose **Hyperliquid TESTNET live 5-minute trading app**.
+
+- Runtime: TESTNET only, 5m trading with the existing 1h regime input.
+- Coins: BTC, ETH, SOL, BNB, HYPE, NEAR, WLD, TON, SUI, and DOGE.
+- One command: `bun run start` launches web (`:3000`), API (`:8787`), and trader together.
+- One dashboard: live TESTNET health, coin state, positions, trades, signals, order attempts,
+  errors, and the event log only.
+- No PAPER, backtest, portfolio, replay, mixed-mode, or timeframe-selector views in the running app.
+- Candle history stays in `data/monitor.db`; live trade state stays in `data/testnet.db`.
+- Health is available at `GET http://localhost:8787/health` and `logs/status.json`.
+- Events are written to `logs/events.TESTNET.jsonl` with a manifest and monotonic cursor.
+
+The backtest engine remains in the repository for validation. TESTNET and backtest continue to
+share `packages/core` and the unchanged `FIVE_MIN_TUNING`; those are the parity contract.
 
 ## 1. What the original app was (`master`)
 
@@ -58,6 +75,33 @@ Three layers were added on top of the original monitor (commits `60d9bdf`, `adc6
 
 > Add an entry every time you change something. Keep it short: what + why.
 > Format: `### YYYY-MM-DD — short title` then a couple of bullet points.
+
+### 2026-06-15 — Consolidated TESTNET-only 5m application
+- Converted the running app to one purpose: live Hyperliquid TESTNET trading on 5m across all
+  10 supported coins. Removed PAPER, backtest, portfolio, replay, mixed views, and timeframe
+  selection from the UI and its data fetching; the retained backtest engine is not exposed.
+- Preserved the existing strategy implementation instead of rebuilding it. `packages/core` and
+  every `FIVE_MIN_TUNING` value remain the shared source used to keep TESTNET signals aligned
+  with the 5m backtest.
+- Added `bun run start` supervision for web, API, and trader with TESTNET/5m/enabled defaults,
+  automatic `data/` and `logs/` creation, fixed `data/testnet.db`, prefixed output, and unified
+  shutdown. Added `install:app`, `stop`, `status`, `health`, `web`, `api`, and `trader` scripts.
+- Split storage cleanly: `data/monitor.db` contains candles and `data/testnet.db` contains live
+  positions, fills, closed trades, decisions, equity, and heartbeat state. Removed the obsolete
+  mixed-mode `data/trader.db` files.
+- Added strict `GET :8787/health` and matching `logs/status.json` snapshots with per-coin price,
+  last closed 5m candle, position, last signal, and last order attempt, plus trader/feed status,
+  heartbeat age, equity, used margin, and latest error. Health fails for wrong mode, missing or
+  duplicate trader, stale feed/heartbeat, or missing `trader.secret.ts`.
+- Standardized the append-only log at `logs/events.TESTNET.jsonl` with a manifest, monotonic
+  `eventId`, stable `tradeId`, and `HEARTBEAT`, `SIGNAL`, `ORDER_ATTEMPT`, `OPEN`, `CLOSE`,
+  `ERROR`, and `SKIP` records. OPEN retains the full forensic signal, indicator, risk, account,
+  fee, order, position, and triggering-candle payload.
+- Added three restart-always user systemd units, lifecycle and health shell scripts, a read-only
+  silent-when-healthy Hermes watchdog, and the root `AGENTS.md` operator guide. The watchdog only
+  alerts on OPEN, CLOSE, ERROR, stale/down/wrong-mode health, or duplicate trader processes.
+- This entry consolidates the former `paper-five-min-only.md` specification and its change log.
+  Verification was intentionally deferred; this entry makes no test or runtime verification claim.
 
 ### 2026-06-12 — Cleared stale TESTNET heartbeat errors after successful reconcile
 - Investigated repeated heartbeat `lastError reconcile: 502 Bad Gateway` messages and found the real

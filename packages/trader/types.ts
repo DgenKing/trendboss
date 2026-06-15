@@ -52,6 +52,9 @@ export interface LivePosition {
   fees?: number;
   stopOrderId?: string | null;
   targetOrderId?: string | null;
+  tradeId?: string | null;
+  signalId?: string | null;
+  positionId?: string | null;
 }
 
 export interface LiveClosedTrade extends LivePosition {
@@ -87,6 +90,26 @@ export interface EquityPoint {
 
 export type CandleFeedSource = 'WS' | 'REST_POLL';
 
+export interface LiveSignalSummary {
+  time: number;
+  direction: Direction;
+  strategy: StrategyName;
+  score: number;
+  entry: number;
+  stop: number;
+  target: number;
+}
+
+export interface LiveOrderAttemptSummary {
+  time: number;
+  direction: Direction;
+  strategy: StrategyName;
+  status: string;
+  reason: string;
+  margin: number;
+  notional: number;
+}
+
 export interface LiveHeartbeat {
   time: number;
   startedAt: number;
@@ -102,6 +125,9 @@ export interface LiveHeartbeat {
   feedPath: CandleFeedSource | 'NONE';
   rawChannels: Record<string, number>;
   lastRawChannel: string | null;
+  currentPriceByCoin: Record<string, number | null>;
+  lastSignalByCoin: Record<string, LiveSignalSummary | null>;
+  lastOrderAttemptByCoin: Record<string, LiveOrderAttemptSummary | null>;
 }
 
 export interface LiveState {

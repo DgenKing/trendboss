@@ -1,9 +1,8 @@
 // Plain perps are referenced by bare symbol ("ETH").
 // HIP-3 builder-deployed markets use a "dex:ASSET" form ("xyz:XYZ100", "xyz:SP500").
 const DEFAULT_COINS = [
-  'BTC', 'ETH', 'SOL', 'BNB', 'HYPE', 'ZEC',
-  'NEAR', 'WLD', 'XRP', 'TON', 'SUI', 'DOGE',
-  'xyz:XYZ100', 'xyz:SP500',
+  'BTC', 'ETH', 'SOL', 'BNB', 'HYPE',
+  'NEAR', 'WLD', 'TON', 'SUI', 'DOGE',
 ];
 
 // COINS env overrides the default list, e.g. COINS="ETH,SOL,xyz:SP500"
@@ -49,8 +48,9 @@ export type IntervalTuning = {
 
 export type TraderMode = 'PAPER' | 'TESTNET';
 
-const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
-const traderMode = process.env.TRADER_MODE === 'TESTNET' ? 'TESTNET' : 'PAPER';
+const tradeInterval = (process.env.TRADE_INTERVAL ?? '5m') as TradeInterval;
+const requestedMode = process.env.TRADER_MODE ?? process.env.APP_MODE ?? 'TESTNET';
+const traderMode = requestedMode === 'TESTNET' ? 'TESTNET' : 'PAPER';
 const traderEnabled = process.env.TRADER_ENABLED === 'true';
 const TESTNET_SUPPORTED_TRADER_COINS = [
   'BTC', 'ETH', 'SOL', 'BNB', 'HYPE',
@@ -294,7 +294,7 @@ export const config = {
     maxOpenPositions: 10,
     heartbeatSeconds: Number(process.env.TRADER_HEARTBEAT_SECONDS ?? 60),
     tuning: FIVE_MIN_TUNING,
-    dbPath: process.env.TRADER_DB_PATH ?? 'data/trader.db',
+    dbPath: process.env.TRADER_DB_PATH ?? 'data/testnet.db',
   },
   staleSocketSeconds: 90,
   apiPort: Number(process.env.API_PORT ?? 8787),
