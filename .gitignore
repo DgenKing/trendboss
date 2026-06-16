@@ -2,9 +2,11 @@ node_modules/
 .next/
 dist/
 *.log
+logs/
 data/*.db
 data/*.db-shm
 data/*.db-wal
 .env
+trader.secret.ts
 PLAN.md
 .superpowers/

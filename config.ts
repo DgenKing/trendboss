@@ -1,9 +1,8 @@
 // Plain perps are referenced by bare symbol ("ETH").
 // HIP-3 builder-deployed markets use a "dex:ASSET" form ("xyz:XYZ100", "xyz:SP500").
 const DEFAULT_COINS = [
-  'BTC', 'ETH', 'SOL', 'BNB', 'HYPE', 'ZEC',
-  'NEAR', 'WLD', 'XRP', 'TON', 'SUI', 'DOGE',
-  'xyz:XYZ100', 'xyz:SP500',
+  'BTC', 'ETH', 'SOL', 'BNB', 'HYPE',
+  'NEAR', 'WLD', 'TON', 'SUI', 'DOGE',
 ];
 
 // COINS env overrides the default list, e.g. COINS="ETH,SOL,xyz:SP500"
@@ -47,7 +46,41 @@ export type IntervalTuning = {
   };
 };
 
-const tradeInterval = (process.env.TRADE_INTERVAL ?? '15m') as TradeInterval;
+export type TraderMode = 'PAPER' | 'TESTNET';
+
+const tradeInterval = (process.env.TRADE_INTERVAL ?? '5m') as TradeInterval;
+const requestedMode = process.env.TRADER_MODE ?? process.env.APP_MODE ?? 'TESTNET';
+const traderMode = requestedMode === 'TESTNET' ? 'TESTNET' : 'PAPER';
+const traderEnabled = process.env.TRADER_ENABLED === 'true';
+const TESTNET_SUPPORTED_TRADER_COINS = [
+  'BTC', 'ETH', 'SOL', 'BNB', 'HYPE',
+  'NEAR', 'WLD', 'TON', 'SUI', 'DOGE',
+] as const;
+const testnetSupportedTraderCoins = new Set<string>(TESTNET_SUPPORTED_TRADER_COINS);
+const traderCoinSelection = coins.map((coin) => {
+  if (coin.includes(':')) {
+    return {
+      coin,
+      included: false,
+      reason: 'HIP-3 dex market is not supported by the TESTNET executor',
+    };
+  }
+  if (!testnetSupportedTraderCoins.has(coin)) {
+    return {
+      coin,
+      included: false,
+      reason: 'not listed in Hyperliquid TESTNET meta universe queried 2026-06-08',
+    };
+  }
+  return {
+    coin,
+    included: true,
+    reason: 'plain perp listed in Hyperliquid TESTNET meta universe',
+  };
+});
+const traderCoins = traderCoinSelection
+  .filter((item) => item.included)
+  .map((item) => item.coin);
 const regimeForTrade = {
   '5m': '1h',
   '15m': '1h',
@@ -55,6 +88,38 @@ const regimeForTrade = {
   '2h': '4h',
   '4h': '1d',
 } as const satisfies Record<TradeInterval, string>;
+
+const FIVE_MIN_TUNING: IntervalTuning = {
+  swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
+  pivotWindow: 2,
+  swingMinDistancePct: 0.015,  // a swing must be >=1.5% beyond the range, else it's the same peak -> null
+  touchTolerance: 0.0006,      // 0.06%
+  touchCooldownMinutes: 60,
+  confirmWithinCandles: 3,
+  stopBuffer: 0.0005,
+  regime: {
+    adxPeriod: 14,
+    adxThreshold: 38,
+    fastEmaPeriod: 20,
+    slowEmaPeriod: 50,
+    slowEmaSlopeLookback: 10,
+  },
+  trend: {
+    breakoutLookback: 80,
+    atrPeriod: 14,
+    atrStopMultiple: 3.4,
+    targetR: 2.2,
+    rsiPeriod: 14,
+    rsiLongMin: 62,
+    rsiShortMax: 38,
+  },
+  range: {
+    enabled: true,
+    maxAdx: 16,
+    targetR: 2.4,
+    minScore: 80,
+  },
+};
 
 export const config = {
   coins,
@@ -76,37 +141,7 @@ export const config = {
   backfillRequestSpacingMs: 300,
   tuning: {
     // ===== 5m tuning =====
-    '5m': {
-      swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
-      pivotWindow: 2,
-      swingMinDistancePct: 0.015,  // a swing must be >=1.5% beyond the range, else it's the same peak -> null
-      touchTolerance: 0.0006,      // 0.06%
-      touchCooldownMinutes: 60,
-      confirmWithinCandles: 3,
-      stopBuffer: 0.0005,
-      regime: {
-        adxPeriod: 14,
-        adxThreshold: 38,
-        fastEmaPeriod: 20,
-        slowEmaPeriod: 50,
-        slowEmaSlopeLookback: 10,
-      },
-      trend: {
-        breakoutLookback: 80,
-        atrPeriod: 14,
-        atrStopMultiple: 3.4,
-        targetR: 2.2,
-        rsiPeriod: 14,
-        rsiLongMin: 62,
-        rsiShortMax: 38,
-      },
-      range: {
-        enabled: true,
-        maxAdx: 16,
-        targetR: 2.4,
-        minScore: 80,
-      },
-    },
+    '5m': FIVE_MIN_TUNING,
     // ===== 15m tuning =====
     '15m': {
       swingLookbackDays: 0,        // 0 = scroll back through ALL available history (no cap)
@@ -247,6 +282,22 @@ export const config = {
     maxPositionMargin: 0.25,
     maxTotalMargin: 1,
     cacheMs: 60_000,
+  },
+  trader: {
+    enabled: traderEnabled,
+    mode: traderMode as TraderMode,
+    tradeInterval: '5m' as const,
+    coins: traderCoins,
+    coinSelection: traderCoinSelection,
+    testnetRestUrl: 'https://api.hyperliquid-testnet.xyz',
+    testnetWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
+    maxOpenPositions: Number(process.env.TRADER_MAX_OPEN_POSITIONS ?? 1),
+    maxTradeMarginUsd: Number(process.env.TRADER_MAX_TRADE_MARGIN_USD ?? 10),
+    label: process.env.TRADER_LABEL ?? 'Hermes Trades',
+    botName: process.env.TRADER_BOT_NAME ?? 'hermes-trades',
+    heartbeatSeconds: Number(process.env.TRADER_HEARTBEAT_SECONDS ?? 60),
+    tuning: FIVE_MIN_TUNING,
+    dbPath: process.env.TRADER_DB_PATH ?? 'data/testnet.db',
   },
   staleSocketSeconds: 90,
   apiPort: Number(process.env.API_PORT ?? 8787),

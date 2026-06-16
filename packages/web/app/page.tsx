@@ -1,828 +1,193 @@
 'use client';
 
-import { Clock, Wifi, WifiOff } from 'lucide-react';
-import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
-import {
-  displayCoin,
-  getBacktest,
-  getCoins,
-  getDashboardData,
-  getIntervals,
-  getPortfolio,
-  getTradeIntervals,
-  type Candle,
-  type Levels,
-  type MarketEvent,
-  type Status,
-} from '../lib/api';
-import type { BacktestResult, BacktestTrade } from '../../core/backtest';
-import type { PortfolioResult } from '../../core/portfolio';
-
-const Chart = dynamic(() => import('../components/Chart'), { ssr: false });
-const PortfolioView = dynamic(() => import('../components/PortfolioView'), { ssr: false });
-
-type Theme = 'light' | 'dusk' | 'dark';
-type ActiveView = 'portfolio' | 'symbol';
-
-type DashboardData = {
-  levels: Levels | null;
-  candles: Candle[];
-  events: MarketEvent[];
-  status: Status | null;
-};
-
-const emptyData: DashboardData = {
-  levels: null,
-  candles: [],
-  events: [],
-  status: null,
-};
-
-type BacktestLoadState = {
-  result: BacktestResult | null;
-  loading: boolean;
-  error: string | null;
-};
-
-const emptyBacktest: BacktestLoadState = {
-  result: null,
-  loading: false,
-  error: null,
-};
-
-type PortfolioLoadState = {
-  result: PortfolioResult | null;
-  loading: boolean;
-  error: string | null;
-};
-
-const emptyPortfolio: PortfolioLoadState = { result: null, loading: false, error: null };
-
-const BACKTEST_REFRESH_MS = 60_000;
-const DEFAULT_TRADE_INTERVALS = ['5m', '15m', '1h', '2h', '4h'];
-const REGIME_BY_TRADE: Record<string, string> = {
-  '5m': '1h',
-  '15m': '1h',
-  '1h': '4h',
-  '2h': '4h',
-  '4h': '1d',
-};
-const HISTORY_DEPTH_BY_TRADE: Record<string, string> = {
-  '5m': '~17 days',
-  '15m': '~52 days',
-  '1h': '~208 days',
-  '2h': '~417 days',
-  '4h': '~833 days',
-};
+import { getEvents, getHealth, type EventRecord, type HealthPayload, type LivePosition } from '../lib/api';
 
 export default function Page() {
-  const [coins, setCoins] = useState<string[]>([]);
-  const [intervals, setIntervals] = useState<string[]>([]);
-  const [coin, setCoin] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<ActiveView>('portfolio');
-  const [activeInterval, setActiveInterval] = useState('15m');
-  const [tradeIntervals, setTradeIntervals] = useState<string[]>(DEFAULT_TRADE_INTERVALS);
-  const [activeTradeInterval, setActiveTradeInterval] = useState('15m');
-  const [data, setData] = useState<DashboardData>(emptyData);
+  const [health, setHealth] = useState<HealthPayload | null>(null);
+  const [events, setEvents] = useState<EventRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [theme, setTheme] = useState<Theme>('light');
-  const [backtest, setBacktest] = useState<BacktestLoadState>(emptyBacktest);
-  const [portfolio, setPortfolio] = useState<PortfolioLoadState>(emptyPortfolio);
-
-  // Load the saved theme once, then keep <html data-theme> and localStorage in sync.
-  useEffect(() => {
-    const saved = localStorage.getItem('tb-theme');
-    if (saved === 'light' || saved === 'dusk' || saved === 'dark') setTheme(saved);
-  }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem('tb-theme', theme);
-  }, [theme]);
-
-  // Load the coin list, retrying until the monitor API is reachable.
-  useEffect(() => {
-    let alive = true;
-    let timer: ReturnType<typeof setInterval> | null = null;
-
-    async function loadCoins() {
+    let active = true;
+    async function refresh() {
       try {
-        const list = await getCoins();
-        if (!alive || list.length === 0) return;
-        setCoins(list);
-        setCoin((current) => current ?? list[0]);
-        setError(null);
-        if (timer) {
-          clearInterval(timer);
-          timer = null;
-        }
-      } catch {
-        if (alive) setError('Cannot reach monitor API');
-      }
-    }
-
-    void loadCoins();
-    timer = setInterval(loadCoins, 5_000);
-    return () => {
-      alive = false;
-      if (timer) clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-
-    async function loadTradeIntervals() {
-      try {
-        const list = await getTradeIntervals();
-        if (!alive || list.length === 0) return;
-        setTradeIntervals(list);
-        setActiveTradeInterval((current) => list.includes(current) ? current : '15m');
-      } catch {
-        if (alive) setTradeIntervals(DEFAULT_TRADE_INTERVALS);
-      }
-    }
-
-    void loadTradeIntervals();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-
-    async function loadIntervals() {
-      try {
-        const list = await getIntervals();
-        if (!alive || list.length === 0) return;
-        setIntervals(list);
-        setActiveInterval((current) => list.includes(current) ? current : list[0]);
-      } catch {
-        if (alive) setIntervals(['15m']);
-      }
-    }
-
-    void loadIntervals();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // Poll dashboard data for the selected coin.
-  useEffect(() => {
-    if (!coin) return;
-    let alive = true;
-    setData(emptyData);
-
-    async function load() {
-      try {
-        const next = await getDashboardData(coin!, activeInterval);
-        if (!alive) return;
-        setData(next);
+        const [nextHealth, nextEvents] = await Promise.all([getHealth(), getEvents()]);
+        if (!active) return;
+        setHealth(nextHealth);
+        setEvents(nextEvents);
         setError(null);
       } catch (caught) {
-        if (!alive) return;
-        setError(caught instanceof Error ? caught.message : 'API unavailable');
+        if (active) setError(caught instanceof Error ? caught.message : 'TESTNET API unavailable');
       }
     }
-
-    void load();
-    const interval = setInterval(load, 5_000);
+    void refresh();
+    const timer = setInterval(refresh, 5_000);
     return () => {
-      alive = false;
-      clearInterval(interval);
+      active = false;
+      clearInterval(timer);
     };
-  }, [coin, activeInterval]);
+  }, []);
 
-  useEffect(() => {
-    if (!coin) {
-      setBacktest(emptyBacktest);
-      return;
-    }
-
-    let alive = true;
-
-    async function loadBacktest() {
-      setBacktest((current) => ({ ...current, loading: true, error: null }));
-
-      try {
-        const result = await getBacktest(coin!, activeTradeInterval);
-        if (!alive) return;
-
-        setBacktest({
-          result,
-          loading: false,
-          error: null,
-        });
-      } catch (caught) {
-        if (!alive) return;
-        setBacktest({
-          result: null,
-          loading: false,
-          error: caught instanceof Error ? caught.message : 'Backtest unavailable',
-        });
-      }
-    }
-
-    void loadBacktest();
-    const interval = setInterval(loadBacktest, BACKTEST_REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
-  }, [coin, activeTradeInterval]);
-
-  useEffect(() => {
-    let alive = true;
-    async function loadPortfolio() {
-      setPortfolio((current) => ({ ...current, loading: true, error: null }));
-      try {
-        const result = await getPortfolio(activeTradeInterval);
-        if (alive) setPortfolio({ result, loading: false, error: null });
-      } catch (caught) {
-        if (alive) setPortfolio({
-          result: null,
-          loading: false,
-          error: caught instanceof Error ? caught.message : 'Portfolio unavailable',
-        });
-      }
-    }
-    void loadPortfolio();
-    const interval = setInterval(loadPortfolio, BACKTEST_REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
-  }, [activeTradeInterval]);
-
-  const latestClose = data.candles.at(-1)?.close ?? null;
-  const price = data.status?.currentPrice ?? latestClose;
-  const portfolioEquity = portfolio.result?.summary.finalEquity ?? null;
+  const positions = useMemo(
+    () => health?.coins.flatMap((coin) => coin.position ? [coin.position] : []) ?? [],
+    [health],
+  );
+  const hermesPositions = useMemo(() => positions.filter((position) => position.botName === 'hermes-trades'), [positions]);
+  const legacyPositions = useMemo(() => positions.filter((position) => position.botName !== 'hermes-trades'), [positions]);
+  const closed = useMemo(() => events.filter((event) => event.type === 'CLOSE').reverse(), [events]);
+  const visibleEvents = useMemo(
+    () => events.filter((event) => event.type !== 'HEARTBEAT').reverse().slice(0, 80),
+    [events],
+  );
+  const latestError = useMemo(() => [...events].reverse().find((event) => event.type === 'ERROR') ?? null, [events]);
 
   return (
-    <main className="min-h-screen bg-bg text-ink">
-      <header className="border-b border-line bg-surface">
-        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4 px-5 py-4">
-          <div className="flex items-center gap-3">
-            <img src="/trendboss-logo.png" alt="TrendBoss" className="h-9 w-auto" />
+    <main className="min-h-screen bg-[#090b0e] text-[#f4f5f7]">
+      <header className="border-b border-white/10 bg-[#0d1015]">
+        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4 px-5 py-5">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-300">Hyperliquid TESTNET</p>
+            <h1 className="mt-1 text-2xl font-semibold">Hermes Trades</h1>
+            <p className="mt-1 text-sm text-white/50">$10 max margin · one coin at a time · stop + TP required</p>
           </div>
-
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <ThemeSelector theme={theme} onSelect={setTheme} />
-            <StatusPill healthy={Boolean(data.status?.socketHealthy)} />
-            <Metric
-              label={activeView === 'portfolio' ? 'Portfolio Equity' : 'Price'}
-              value={activeView === 'portfolio'
-                ? portfolioEquity === null ? 'Waiting' : formatUsd(portfolioEquity)
-                : price === null ? 'Waiting' : formatPrice(price)}
-            />
-            <Metric
-              label={activeView === 'portfolio' ? 'Portfolio Through' : 'Last Candle'}
-              value={formatTimes(activeView === 'portfolio' ? portfolio.result?.commonEndTime ?? null : data.status?.lastCandleTime ?? null)}
-              wide
-            />
+          <div className="flex items-center gap-3">
+            <StatusDot ok={Boolean(health?.ok) && !error} />
+            <div>
+              <p className="text-sm font-semibold">{error ? 'API unavailable' : health?.ok ? 'Healthy' : 'Attention required'}</p>
+              <p className="text-xs text-white/45">Updated {formatTime(health?.updatedAt ?? null)}</p>
+            </div>
           </div>
         </div>
       </header>
 
-      <CoinSelector
-        coins={coins}
-        active={activeView === 'symbol' ? coin : null}
-        portfolioActive={activeView === 'portfolio'}
-        onPortfolio={() => setActiveView('portfolio')}
-        onSelect={(nextCoin) => {
-          setCoin(nextCoin);
-          setActiveView('symbol');
-        }}
-      />
+      <div className="mx-auto max-w-[1600px] space-y-5 px-5 py-5">
+        {error ? <Alert text={error} /> : null}
+        {health?.lastError ? <Alert text={health.lastError} /> : null}
+        {!health?.lastError && latestError ? <Alert text={`Latest trader error: ${latestError.reason ?? latestError.error ?? 'unknown'}`} /> : null}
 
-      {activeView === 'portfolio' ? (
-        <div className="mx-auto max-w-[1600px] px-5 py-5">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <TradeTimeframeSelector
-              intervals={tradeIntervals}
-              active={activeTradeInterval}
-              onSelect={setActiveTradeInterval}
-            />
-            <TradeTimeframeLabel interval={activeTradeInterval} />
-          </div>
-          <PortfolioView
-            result={portfolio.result}
-            loading={portfolio.loading}
-            error={portfolio.error}
-            theme={theme}
-            tradeInterval={activeTradeInterval}
-          />
-        </div>
-      ) : (
-      <div className="mx-auto grid max-w-[1600px] gap-4 px-5 py-5 xl:grid-cols-[minmax(0,1fr)_390px]">
-        <section className="min-w-0">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <LevelStrip levels={data.levels} />
-            <TimeframeSelector intervals={intervals} active={activeInterval} onSelect={setActiveInterval} />
-            {error ? <span className="text-sm font-medium text-negative">{error}</span> : null}
-          </div>
-          <div className="relative">
-            <div className="pointer-events-none absolute left-3 top-3 z-10 text-sm text-muted">
-              {coin ? `${displayCoin(coin)} perpetual` : ''}
-            </div>
-            <Chart
-              key={`${coin ?? 'none'}:${activeInterval}`}
-              candles={data.candles}
-              levels={data.levels}
-              interval={activeInterval}
-              theme={theme}
-            />
-          </div>
-          <BacktestPanel
-            coin={coin}
-            state={backtest}
-            tradeIntervals={tradeIntervals}
-            activeTradeInterval={activeTradeInterval}
-            onTradeIntervalSelect={setActiveTradeInterval}
-          />
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
+          <Metric label="Web" value="Running" good />
+          <Metric label="API" value={error ? 'Down' : 'Running'} good={!error} />
+          <Metric label="Mode" value={health?.mode ?? '--'} good={health?.mode === 'TESTNET'} />
+          <Metric label="Trader" value={health?.traderRunning ? 'Running' : 'Down'} good={health?.traderRunning} />
+          <Metric label="Feed" value={health?.feedSocketStatus ?? '--'} good={health?.feedSocketStatus !== 'STALE'} />
+          <Metric label="Heartbeat" value={health?.heartbeatAgeSec == null ? '--' : `${health.heartbeatAgeSec}s`} good={health?.ok} />
+          <Metric label="Equity" value={formatUsd(health?.equity)} />
+          <Metric label="Used margin" value={formatUsd(health?.usedMargin)} />
         </section>
 
-        <aside className="min-w-0 rounded border border-line bg-surface">
-          <div className="flex items-center justify-between border-b border-line px-4 py-3">
-            <h2 className="text-base font-semibold">Signal Feed</h2>
-            <span className="text-sm text-muted">{data.events.length}</span>
+        <Panel title="10-Coin Live State">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1180px] text-left text-sm">
+              <thead className="text-xs uppercase tracking-wider text-white/40">
+                <tr className="border-b border-white/10">
+                  <Th>Coin</Th><Th>Price</Th><Th>Last closed 5m</Th><Th>Position</Th><Th>Last signal</Th><Th>Last order attempt</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {(health?.coins ?? []).map((coin) => (
+                  <tr key={coin.coin} className="border-b border-white/5 align-top last:border-0">
+                    <Td><span className="font-semibold text-sky-200">{coin.coin}</span></Td>
+                    <Td>{formatPrice(coin.price)}</Td>
+                    <Td>{formatTime(coin.lastClosed5mCandle)}</Td>
+                    <Td>{coin.position ? <PositionBrief position={coin.position} /> : <Muted>Flat</Muted>}</Td>
+                    <Td>{coin.lastSignal ? (
+                      <Stack lines={[
+                        `${coin.lastSignal.direction} ${labelStrategy(coin.lastSignal.strategy)} · score ${coin.lastSignal.score}`,
+                        formatTime(coin.lastSignal.time),
+                      ]} />
+                    ) : <Muted>None</Muted>}</Td>
+                    <Td>{coin.lastOrderAttempt ? (
+                      <Stack lines={[
+                        `${coin.lastOrderAttempt.status} · ${coin.lastOrderAttempt.reason}`,
+                        formatTime(coin.lastOrderAttempt.time),
+                      ]} />
+                    ) : <Muted>None</Muted>}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <div className="max-h-[620px] overflow-y-auto">
-            {data.events.length === 0 ? (
-              <div className="px-4 py-8 text-sm text-muted">No events yet</div>
-            ) : data.events.map((event) => (
-              <EventRow key={`${event.id ?? event.candleCloseTime}-${event.type}-${event.levelName}`} event={event} />
-            ))}
+        </Panel>
+
+        <section className="grid gap-5 xl:grid-cols-2">
+          <Panel title={`Hermes Trades (${hermesPositions.length ? hermesPositions.length : 'None'})`}>
+            {hermesPositions.length ? hermesPositions.map((position) => <PositionCard key={position.coin} position={position} />) : <Empty text="Hermes Trades: None" />}
+          </Panel>
+          <Panel title={`TrendBoss / Legacy Trades (${legacyPositions.length ? legacyPositions.length : 'None'})`}>
+            {legacyPositions.length ? legacyPositions.map((position) => <PositionCard key={position.coin} position={position} />) : <Empty text="No legacy TrendBoss positions" />}
+          </Panel>
+          <Panel title={`Closed TESTNET Trades (${closed.length})`}>
+            <div className="space-y-2">
+              {closed.slice(0, 20).map((event) => (
+                <div key={event.eventId} className="grid grid-cols-[70px_1fr_auto] gap-3 border-b border-white/5 py-3 text-sm">
+                  <strong>{event.symbol}</strong>
+                  <span className="text-white/65">{event.direction} {labelStrategy(event.strategy)} · {event.reason}</span>
+                  <span className={(event.pnl ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{formatUsd(event.pnl)}</span>
+                </div>
+              ))}
+              {!closed.length ? <Empty text="No CLOSE events recorded" /> : null}
+            </div>
+          </Panel>
+        </section>
+
+        <Panel title="TESTNET Event Log">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] text-left text-sm">
+              <thead className="text-xs uppercase tracking-wider text-white/40">
+                <tr className="border-b border-white/10"><Th>Time</Th><Th>Type</Th><Th>Coin</Th><Th>Status</Th><Th>Details</Th><Th>Trade ID</Th></tr>
+              </thead>
+              <tbody>
+                {visibleEvents.map((event) => (
+                  <tr key={event.eventId} className="border-b border-white/5 last:border-0">
+                    <Td>{formatTime(event.ts)}</Td><Td><EventBadge type={event.type} /></Td><Td>{event.symbol ?? '--'}</Td>
+                    <Td>{event.status}</Td><Td>{event.reason ?? '--'}</Td><Td><code className="text-xs text-white/35">{event.tradeId.slice(0, 12)}</code></Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!visibleEvents.length ? <Empty text="No TESTNET events recorded" /> : null}
           </div>
-        </aside>
+        </Panel>
       </div>
-      )}
     </main>
   );
 }
 
-function CoinSelector({
-  coins,
-  active,
-  portfolioActive,
-  onPortfolio,
-  onSelect,
-}: {
-  coins: string[];
-  active: string | null;
-  portfolioActive: boolean;
-  onPortfolio: () => void;
-  onSelect: (coin: string) => void;
-}) {
-  if (coins.length === 0) return null;
-
-  return (
-    <nav className="border-b border-line bg-surface">
-      <div className="mx-auto flex max-w-[1600px] gap-2 overflow-x-auto px-5 py-3">
-        <button
-          type="button"
-          onClick={onPortfolio}
-          className={[
-            'shrink-0 rounded border px-3 py-1.5 text-sm font-semibold transition-colors',
-            portfolioActive
-              ? 'border-accent bg-accent text-accentfg'
-              : 'border-line bg-surface2 text-ink hover:border-muted',
-          ].join(' ')}
-        >
-          Portfolio
-        </button>
-        {coins.map((c) => {
-          const isActive = c === active;
-          return (
-            <button
-              key={c}
-              type="button"
-              onClick={() => onSelect(c)}
-              className={[
-                'shrink-0 rounded border px-3 py-1.5 text-sm font-semibold transition-colors',
-                isActive
-                  ? 'border-accent bg-accent text-accentfg'
-                  : 'border-line bg-surface2 text-ink hover:border-muted',
-              ].join(' ')}
-            >
-              {displayCoin(c)}
-            </button>
-          );
-        })}
-      </div>
-    </nav>
-  );
+function StatusDot({ ok }: { ok: boolean }) {
+  return <span className={`h-3 w-3 rounded-full ${ok ? 'bg-emerald-400 shadow-[0_0_18px_#34d399]' : 'bg-rose-400 shadow-[0_0_18px_#fb7185]'}`} />;
 }
 
-function TimeframeSelector({
-  intervals,
-  active,
-  onSelect,
-}: {
-  intervals: string[];
-  active: string;
-  onSelect: (interval: string) => void;
-}) {
-  if (intervals.length === 0) return null;
-
-  return (
-    <div className="inline-flex rounded border border-line bg-surface2 p-1">
-      {intervals.map((interval) => {
-        const isActive = interval === active;
-        return (
-          <button
-            key={interval}
-            type="button"
-            onClick={() => onSelect(interval)}
-            className={[
-              'min-w-12 rounded px-3 py-1.5 text-sm font-semibold transition-colors',
-              isActive ? 'bg-accent text-accentfg' : 'text-ink hover:bg-bg',
-            ].join(' ')}
-          >
-            {interval}
-          </button>
-        );
-      })}
-    </div>
-  );
+function Metric({ label, value, good }: { label: string; value: string; good?: boolean }) {
+  return <div className="rounded-lg border border-white/10 bg-[#11151b] p-4"><p className="text-xs uppercase tracking-wider text-white/40">{label}</p><p className={`mt-2 text-lg font-semibold ${good === false ? 'text-rose-300' : good ? 'text-emerald-300' : ''}`}>{value}</p></div>;
 }
 
-function TradeTimeframeSelector({
-  intervals,
-  active,
-  onSelect,
-}: {
-  intervals: string[];
-  active: string;
-  onSelect: (interval: string) => void;
-}) {
-  return (
-    <div className="inline-flex rounded border border-line bg-surface2 p-1">
-      {intervals.map((interval) => {
-        const isActive = interval === active;
-        return (
-          <button
-            key={interval}
-            type="button"
-            onClick={() => onSelect(interval)}
-            className={[
-              'min-w-12 rounded px-3 py-1.5 text-sm font-semibold transition-colors',
-              isActive ? 'bg-accent text-accentfg' : 'text-ink hover:bg-bg',
-            ].join(' ')}
-          >
-            {interval}
-          </button>
-        );
-      })}
-    </div>
-  );
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section className="rounded-lg border border-white/10 bg-[#11151b]"><h2 className="border-b border-white/10 px-4 py-3 text-sm font-semibold uppercase tracking-wider text-white/60">{title}</h2><div className="p-4">{children}</div></section>;
 }
 
-function TradeTimeframeLabel({ interval }: { interval: string }) {
-  return (
-    <div className="rounded border border-line bg-surface2 px-3 py-2 text-sm">
-      <span className="text-xs uppercase text-muted">Trade timeframe</span>
-      <span className="ml-2 font-semibold">{interval} · {HISTORY_DEPTH_BY_TRADE[interval] ?? 'available history'}</span>
-    </div>
-  );
+function PositionBrief({ position }: { position: LivePosition }) {
+  return <Stack lines={[`${position.direction} · ${formatPrice(position.entry)} → ${formatPrice(position.currentPrice)}`, `PnL ${formatUsd(position.unrealizedPnl)} · margin ${formatUsd(position.margin)}`]} />;
 }
 
-function ThemeSelector({ theme, onSelect }: { theme: Theme; onSelect: (theme: Theme) => void }) {
-  const options: Array<[Theme, string]> = [['light', 'Light'], ['dusk', 'Dusk'], ['dark', 'Dark']];
-
-  return (
-    <div className="inline-flex rounded border border-line bg-surface2 p-1">
-      {options.map(([value, label]) => {
-        const isActive = value === theme;
-        return (
-          <button
-            key={value}
-            type="button"
-            onClick={() => onSelect(value)}
-            className={[
-              'rounded px-2.5 py-1.5 text-sm font-semibold transition-colors',
-              isActive ? 'bg-accent text-accentfg' : 'text-ink hover:bg-bg',
-            ].join(' ')}
-          >
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  );
+function PositionCard({ position }: { position: LivePosition }) {
+  return <div className="mb-3 rounded-md border border-white/10 bg-black/20 p-4 last:mb-0"><div className="flex items-center justify-between"><strong>{position.coin} {position.direction}</strong><span className={position.unrealizedPnl >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{formatUsd(position.unrealizedPnl)}</span></div><div className="mt-3 grid grid-cols-2 gap-2 text-sm text-white/60 sm:grid-cols-4"><span>Entry {formatPrice(position.entry)}</span><span>Stop {formatPrice(position.stop)}</span><span>Target {formatPrice(position.target)}</span><span>Size {position.quantity}</span><span>Margin {formatUsd(position.margin)}</span><span>Fees {formatUsd(position.fees)}</span><span>Strategy {labelStrategy(position.strategy)}</span><span>Opened {formatTime(position.entryTime)}</span></div></div>;
 }
 
-function StatusPill({ healthy }: { healthy: boolean }) {
-  const Icon = healthy ? Wifi : WifiOff;
-
-  return (
-    <span className={[
-      'inline-flex items-center gap-2 rounded border px-3 py-2 font-medium',
-      healthy ? 'border-positive/30 bg-positive/10 text-positive' : 'border-negative/30 bg-negative/10 text-negative',
-    ].join(' ')}>
-      <Icon className="h-4 w-4" aria-hidden />
-      {healthy ? 'Socket Live' : 'Socket Offline'}
-    </span>
-  );
+function EventBadge({ type }: { type: EventRecord['type'] }) {
+  const color = type === 'ERROR' ? 'text-rose-300' : type === 'OPEN' ? 'text-emerald-300' : type === 'CLOSE' ? 'text-amber-300' : 'text-sky-200';
+  return <span className={color}>{type}</span>;
 }
 
-function Metric({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
-  return (
-    <div className={['rounded border border-line bg-surface2 px-3 py-2', wide ? 'min-w-[260px]' : 'min-w-[120px]'].join(' ')}>
-      <div className="text-xs uppercase text-muted">{label}</div>
-      <div className="truncate font-semibold">{value}</div>
-    </div>
-  );
-}
+function Stack({ lines }: { lines: string[] }) { return <span className="block"><span className="block">{lines[0]}</span><span className="mt-1 block text-xs text-white/40">{lines[1]}</span></span>; }
+function Muted({ children }: { children: React.ReactNode }) { return <span className="text-white/35">{children}</span>; }
+function Empty({ text }: { text: string }) { return <p className="py-6 text-center text-sm text-white/35">{text}</p>; }
+function Alert({ text }: { text: string }) { return <div className="rounded-lg border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">{text}</div>; }
+function Th({ children }: { children: React.ReactNode }) { return <th className="px-3 py-3 font-medium">{children}</th>; }
+function Td({ children }: { children: React.ReactNode }) { return <td className="px-3 py-3">{children}</td>; }
 
-function LevelStrip({ levels }: { levels: Levels | null }) {
-  const items = useMemo(() => levels ? [
-    ['Range High', levels.rangeHigh, 'text-negative'],
-    ['Swing High', levels.swingHigh, 'text-negative'],
-    ['Range Low', levels.rangeLow, 'text-positive'],
-    ['Swing Low', levels.swingLow, 'text-positive'],
-  ] as const : [], [levels]);
-
-  if (!levels) {
-    return <div className="text-sm text-muted">Levels pending</div>;
-  }
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      {items.map(([label, value, color]) => (
-        <div key={label} className="rounded border border-line bg-surface px-3 py-2 text-sm">
-          <span className="mr-2 text-muted">{label}</span>
-          <span className={`font-semibold ${color}`}>{value === null ? 'None' : formatPrice(value)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function BacktestPanel({
-  coin,
-  state,
-  tradeIntervals,
-  activeTradeInterval,
-  onTradeIntervalSelect,
-}: {
-  coin: string | null;
-  state: BacktestLoadState;
-  tradeIntervals: string[];
-  activeTradeInterval: string;
-  onTradeIntervalSelect: (interval: string) => void;
-}) {
-  const result = state.result;
-  const summary = result?.summary;
-  const outOfSample = result?.segments.outOfSample.summary;
-  const trades = result?.trades.slice(-5).reverse() ?? [];
-  const tradeInterval = result?.tradeInterval ?? activeTradeInterval;
-  const regimeInterval = result?.regimeInterval ?? REGIME_BY_TRADE[tradeInterval] ?? '1h';
-
-  return (
-    <section className="mt-4 rounded border border-line bg-surface">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-4 py-3">
-        <div>
-          <h2 className="text-base font-semibold">Strategy Backtest</h2>
-          <p className="mt-1 text-sm text-muted">
-            {coin
-              ? `${displayCoin(coin)} ${tradeInterval} rules · regime ${regimeInterval} · historical simulation only`
-              : 'Select a market to run the strategy history'}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <TradeTimeframeSelector
-            intervals={tradeIntervals}
-            active={activeTradeInterval}
-            onSelect={onTradeIntervalSelect}
-          />
-          <div className="rounded border border-line bg-surface2 px-3 py-2 text-right text-sm">
-            <div className="text-xs uppercase text-muted">Window</div>
-            <div className="font-semibold">
-              {result?.firstCandleTime ? `${formatShortDate(result.firstCandleTime)} - ${formatShortDate(result.lastCandleTime)}` : 'Waiting'}
-            </div>
-            <div className="text-xs text-muted">{tradeInterval} · {HISTORY_DEPTH_BY_TRADE[tradeInterval] ?? 'available history'}</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid gap-3 p-4 lg:grid-cols-[1fr_1.4fr]">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-2">
-          <BacktestMetric label="Regime" value={result?.currentRegime?.ready ? result.currentRegime.regime : 'WARMUP'} />
-          <BacktestMetric label={`ADX (${regimeInterval})`} value={result?.currentRegime?.ready ? result.currentRegime.adx.toFixed(1) : '--'} />
-          <BacktestMetric label={`RSI (${regimeInterval})`} value={result?.currentRegime?.ready ? result.currentRegime.rsi.toFixed(1) : '--'} />
-          <BacktestMetric label="Signals" value={summary ? String(summary.totalTrades) : '--'} />
-          <BacktestMetric label="Win Rate" value={summary ? formatPercent(summary.winRate) : '--'} tone={summary && summary.winRate >= 0.5 ? 'positive' : undefined} />
-          <BacktestMetric label="Net R" value={summary ? formatR(summary.netR) : '--'} tone={summary && summary.netR >= 0 ? 'positive' : 'negative'} />
-          <BacktestMetric label="Profit Factor" value={summary ? formatProfitFactor(summary.profitFactor) : '--'} tone={summary && summary.profitFactor >= 1 ? 'positive' : 'negative'} />
-          <BacktestMetric label="Max Drawdown" value={summary ? formatR(-summary.maxDrawdownR) : '--'} tone="negative" />
-          <BacktestMetric label="Holdout Net R" value={outOfSample ? formatR(outOfSample.netR) : '--'} tone={outOfSample && outOfSample.netR >= 0 ? 'positive' : 'negative'} />
-          <BacktestMetric label="Exposure" value={result ? formatPercent(result.exposurePct) : '--'} />
-          <BacktestMetric label="Buy & Hold" value={result ? formatPercent(result.buyHoldReturnPct) : '--'} tone={result && result.buyHoldReturnPct >= 0 ? 'positive' : 'negative'} />
-        </div>
-
-        <div className="min-w-0 rounded border border-line bg-surface2">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2 text-sm">
-            <span className="font-semibold">Recent simulated trades</span>
-            <span className="text-muted">
-              {result ? `${result.touchEvents} touches / ${result.breakEvents} breaks / ${result.strategyCandles} candles` : 'No run yet'}
-            </span>
-          </div>
-          {state.error ? (
-            <div className="px-3 py-5 text-sm text-negative">{state.error}</div>
-          ) : state.loading && !result ? (
-            <div className="px-3 py-5 text-sm text-muted">Loading backtest...</div>
-          ) : trades.length === 0 ? (
-            <div className="px-3 py-5 text-sm text-muted">No confirmed signals in the available history.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-left text-sm">
-                <thead className="text-xs uppercase text-muted">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">Time</th>
-                    <th className="px-3 py-2 font-medium">Side</th>
-                    <th className="px-3 py-2 font-medium">Strategy</th>
-                    <th className="px-3 py-2 font-medium">Entry</th>
-                    <th className="px-3 py-2 font-medium">Exit</th>
-                    <th className="px-3 py-2 font-medium">R</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trades.map((trade) => (
-                    <BacktestTradeRow key={`${trade.signalTime}-${trade.direction}-${trade.levelName}`} trade={trade} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="grid border-t border-line sm:grid-cols-2 lg:grid-cols-4">
-        <BacktestBreakdown label="Range reversion" trades={result?.byStrategy.RANGE_REVERSION.totalTrades} netR={result?.byStrategy.RANGE_REVERSION.netR} />
-        <BacktestBreakdown label="Trend momentum" trades={result?.byStrategy.TREND_MOMENTUM.totalTrades} netR={result?.byStrategy.TREND_MOMENTUM.netR} />
-        <BacktestBreakdown label="First 70%" trades={result?.segments.inSample.summary.totalTrades} netR={result?.segments.inSample.summary.netR} />
-        <BacktestBreakdown label="Last 30%" trades={result?.segments.outOfSample.summary.totalTrades} netR={result?.segments.outOfSample.summary.netR} />
-      </div>
-    </section>
-  );
-}
-
-function BacktestBreakdown({ label, trades, netR }: { label: string; trades?: number; netR?: number }) {
-  const tone = netR === undefined ? 'text-muted' : netR >= 0 ? 'text-positive' : 'text-negative';
-  return (
-    <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 text-sm sm:border-r">
-      <span className="font-medium">{label}</span>
-      <span className={tone}>{trades ?? '--'} trades / {netR === undefined ? '--' : formatR(netR)}</span>
-    </div>
-  );
-}
-
-function BacktestMetric({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: 'positive' | 'negative';
-}) {
-  const toneClass = tone === 'positive' ? 'text-positive' : tone === 'negative' ? 'text-negative' : 'text-ink';
-
-  return (
-    <div className="rounded border border-line bg-surface2 px-3 py-2">
-      <div className="text-xs uppercase text-muted">{label}</div>
-      <div className={`truncate text-lg font-semibold ${toneClass}`}>{value}</div>
-    </div>
-  );
-}
-
-function BacktestTradeRow({ trade }: { trade: BacktestTrade }) {
-  const isWin = trade.rMultiple > 0;
-
-  return (
-    <tr className="border-t border-line">
-      <td className="whitespace-nowrap px-3 py-2 text-muted">{formatShortDate(trade.signalTime)}</td>
-      <td className={['px-3 py-2 font-semibold', trade.direction === 'LONG' ? 'text-positive' : 'text-negative'].join(' ')}>
-        {trade.direction}
-      </td>
-      <td className="whitespace-nowrap px-3 py-2 text-xs text-muted">
-        {trade.strategy === 'TREND_MOMENTUM' ? 'Momentum' : 'Range'}
-      </td>
-      <td className="whitespace-nowrap px-3 py-2">{formatPrice(trade.entry)}</td>
-      <td className="whitespace-nowrap px-3 py-2">
-        {formatPrice(trade.exitPrice)}
-        <span className="ml-1 text-xs text-muted">{trade.exitReason}</span>
-      </td>
-      <td className={['whitespace-nowrap px-3 py-2 font-semibold', isWin ? 'text-positive' : 'text-negative'].join(' ')}>
-        {formatR(trade.rMultiple)}
-      </td>
-    </tr>
-  );
-}
-
-function EventRow({ event }: { event: MarketEvent }) {
-  const isSignal = event.type === 'CONFIRMED_SIGNAL';
-  const accent = event.side === 'SUPPORT' ? 'border-l-positive' : 'border-l-negative';
-  const rr = event.entry && event.stop && event.target
-    ? Math.abs(event.target - event.entry) / Math.abs(event.entry - event.stop)
-    : null;
-
-  return (
-    <article className={`border-b border-line border-l-4 ${accent} px-4 py-3`}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold">{isSignal ? `${event.direction} Signal` : titleCase(event.type)}</div>
-          <div className="text-sm text-muted">{event.levelName} at {formatPrice(event.levelPrice)}</div>
-          {isSignal && event.strategy ? (
-            <div className="mt-1 text-xs uppercase text-muted">{event.strategy.replace('_', ' ')} / {event.regime}</div>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-1 text-xs text-muted">
-          <Clock className="h-3.5 w-3.5" aria-hidden />
-          {formatUtcDateTime(event.candleCloseTime)}
-        </div>
-      </div>
-
-      <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
-        <Value label="Close" value={formatPrice(event.price)} />
-        <Value label="Side" value={event.side} />
-        {isSignal ? (
-          <>
-            <Value label="Entry" value={formatPrice(event.entry)} />
-            <Value label="Stop" value={formatPrice(event.stop)} />
-            <Value label="Target" value={formatPrice(event.target)} />
-            <Value label="Score" value={`${event.score ?? 0}`} />
-            <Value label="R:R" value={rr === null ? 'n/a' : rr.toFixed(2)} />
-          </>
-        ) : null}
-      </div>
-    </article>
-  );
-}
-
-function Value({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-xs uppercase text-muted">{label}</div>
-      <div className="truncate font-medium">{value}</div>
-    </div>
-  );
-}
-
-function formatPrice(value: number | undefined) {
-  if (value === undefined) return 'n/a';
-  return value.toLocaleString('en-US', { maximumFractionDigits: 4 });
-}
-
-function formatUsd(value: number) {
-  return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
-}
-
-function formatUtcDateTime(timestamp: number) {
-  // "06-04 14:15" — date + time so prior-day events in the feed are distinguishable.
-  return new Date(timestamp).toISOString().slice(5, 16).replace('T', ' ');
-}
-
-function formatShortDate(timestamp: number | null) {
-  if (!timestamp) return 'Waiting';
-  return new Date(timestamp).toISOString().slice(5, 16).replace('T', ' ');
-}
-
-function formatPercent(value: number) {
-  return `${(value * 100).toFixed(1)}%`;
-}
-
-function formatR(value: number) {
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${value.toFixed(2)}R`;
-}
-
-function formatProfitFactor(value: number) {
-  return Number.isFinite(value) ? value.toFixed(2) : 'INF';
-}
-
-function formatTimes(timestamp: number | null) {
-  if (!timestamp) return 'Waiting';
-
-  const utc = new Date(timestamp).toISOString().replace('T', ' ').slice(0, 16);
-  const uk = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(timestamp);
-
-  return `${utc} UTC / ${uk} UK`;
-}
-
-function titleCase(value: string) {
-  return value
-    .toLowerCase()
-    .split('_')
-    .map((part) => part[0].toUpperCase() + part.slice(1))
-    .join(' ');
-}
+function formatTime(value: number | null) { return value ? new Date(value).toLocaleString() : '--'; }
+function formatUsd(value: number | null | undefined) { return typeof value === 'number' ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value) : '--'; }
+function formatPrice(value: number | null | undefined) { return typeof value === 'number' ? value.toLocaleString('en-US', { maximumSignificantDigits: 8 }) : '--'; }
+function labelStrategy(value: string | null) { return value?.replaceAll('_', ' ') ?? '--'; }

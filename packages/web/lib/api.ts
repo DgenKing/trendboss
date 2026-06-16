@@ -1,108 +1,98 @@
-export type Candle = {
-  openTime: number;
-  closeTime: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
+export type LivePosition = {
+  coin: string;
+  direction: 'LONG' | 'SHORT';
+  strategy: string;
+  entryTime: number;
+  entry: number;
+  stop: number;
+  target: number;
+  margin: number;
+  notional: number;
+  quantity: number;
+  currentPrice: number;
+  unrealizedPnl: number;
+  fees?: number;
+  botName?: string | null;
 };
 
-export type Levels = {
-  coin: string;
-  computedAt: number;
-  forUtcDay: string;
-  rangeHigh: number;
-  rangeLow: number;
-  swingHigh: number | null;
-  swingLow: number | null;
+export type SignalSummary = {
+  time: number;
+  direction: 'LONG' | 'SHORT';
+  strategy: string;
+  score: number;
+  entry: number;
+  stop: number;
+  target: number;
 };
 
-export type MarketEvent = {
-  id?: number;
-  type: 'LEVEL_TOUCH' | 'LEVEL_BREAK' | 'CONFIRMED_SIGNAL';
-  coin: string;
-  side: 'RESISTANCE' | 'SUPPORT';
-  levelName: 'rangeHigh' | 'rangeLow' | 'swingHigh' | 'swingLow' | 'trendBreakoutHigh' | 'trendBreakoutLow';
-  levelPrice: number;
-  candleCloseTime: number;
-  price: number;
-  direction?: 'LONG' | 'SHORT';
-  entry?: number;
-  stop?: number;
-  target?: number;
-  score?: number;
-  strategy?: 'RANGE_REVERSION' | 'TREND_MOMENTUM';
-  regime?: 'UPTREND' | 'DOWNTREND' | 'RANGE';
-  notified: boolean;
+export type OrderAttemptSummary = {
+  time: number;
+  direction: 'LONG' | 'SHORT';
+  strategy: string;
+  status: string;
+  reason: string;
+  margin: number;
+  notional: number;
 };
 
-export type Status = {
+export type HealthCoin = {
   coin: string;
-  coins: string[];
-  lastCandleTime: number | null;
-  socketHealthy: boolean;
-  currentPrice: number | null;
+  price: number | null;
+  lastClosed5mCandle: number | null;
+  position: LivePosition | null;
+  lastSignal: SignalSummary | null;
+  lastOrderAttempt: OrderAttemptSummary | null;
+};
+
+export type HealthPayload = {
+  ok: boolean;
+  mode: 'TESTNET' | 'PAPER';
+  coins: HealthCoin[];
+  traderRunning: boolean;
+  traderProcessCount: number;
+  feedSocketStatus: 'HEALTHY' | 'REST_FALLBACK' | 'STALE';
+  heartbeatAgeSec: number | null;
+  equity: number;
+  usedMargin: number;
+  lastError: string | null;
+  secretPresent: boolean;
+  updatedAt: number;
+};
+
+export type EventType = 'HEARTBEAT' | 'SIGNAL' | 'ORDER_ATTEMPT' | 'OPEN' | 'CLOSE' | 'ERROR' | 'SKIP';
+
+export type EventRecord = {
+  eventId: number;
+  ts: number;
+  type: EventType;
+  event: EventType;
+  tradeId: string;
+  symbol: string | null;
+  direction: string | null;
+  strategy: string | null;
+  status: string;
+  price: number | null;
+  size: number | null;
+  stop: number | null;
+  target: number | null;
+  reason: string | null;
+  error: string | null;
+  pnl: number | null;
+  fees: number | null;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_MONITOR_API ?? 'http://localhost:8787';
-export const CHART_CANDLE_LIMIT = 5000;
 
-export async function getCoins(): Promise<string[]> {
-  return fetchJson<string[]>('/api/coins');
+export function getHealth(): Promise<HealthPayload> {
+  return fetchJson<HealthPayload>('/health');
 }
 
-export async function getIntervals(): Promise<string[]> {
-  return fetchJson<string[]>('/api/intervals');
-}
-
-export async function getTradeIntervals(): Promise<string[]> {
-  return fetchJson<string[]>('/api/trade-intervals');
-}
-
-export async function getPortfolio(interval: string): Promise<PortfolioResult> {
-  return fetchJson<PortfolioResult>(`/api/portfolio?interval=${encodeURIComponent(interval)}`);
-}
-
-export async function getBacktest(coin: string, interval: string): Promise<BacktestResult> {
-  const q = `coin=${encodeURIComponent(coin)}&interval=${encodeURIComponent(interval)}`;
-  return fetchJson<BacktestResult>(`/api/backtest?${q}`);
-}
-
-export async function getDashboardData(coin: string, interval: string) {
-  const q = `coin=${encodeURIComponent(coin)}`;
-  const candlesQ = `${q}&interval=${encodeURIComponent(interval)}&limit=${CHART_CANDLE_LIMIT}`;
-  const [levels, candles, events, status] = await Promise.all([
-    fetchJson<Levels | null>(`/api/levels?${q}`),
-    fetchJson<Candle[]>(`/api/candles?${candlesQ}`),
-    fetchJson<MarketEvent[]>(`/api/events?${q}&limit=50`),
-    fetchJson<Status>(`/api/status?${q}`),
-  ]);
-
-  return { levels, candles, events, status };
-}
-
-export async function getCandles(
-  coin: string,
-  interval: string,
-  limit = CHART_CANDLE_LIMIT,
-): Promise<Candle[]> {
-  const q = `coin=${encodeURIComponent(coin)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
-  return fetchJson<Candle[]>(`/api/candles?${q}`);
-}
-
-// "xyz:SP500" -> "SP500" for display.
-export function displayCoin(coin: string): string {
-  return coin.includes(':') ? coin.split(':').slice(1).join(':') : coin;
+export function getEvents(limit = 1000): Promise<EventRecord[]> {
+  return fetchJson<EventRecord[]>(`/events?limit=${limit}`);
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error(`${path} failed with ${response.status}`);
-  }
-
+  if (!response.ok) throw new Error(`${path} failed with ${response.status}`);
   return response.json() as Promise<T>;
 }
-import type { PortfolioResult } from '../../core/portfolio';
-import type { BacktestResult } from '../../core/backtest';
