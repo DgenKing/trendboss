@@ -208,8 +208,6 @@ export class TestnetExecutor implements Executor {
 
   async closePosition(request: CloseOrderRequest): Promise<CloseOrderResult> {
     const symbol = toPerpSymbol(request.position.coin);
-    await this.cancelOrder(symbol, request.position.stopOrderId);
-    await this.cancelOrder(symbol, request.position.targetOrderId);
 
     const isBuy = request.position.direction === 'SHORT';
     const closeResponse = await this.sdk.exchange.placeOrder({
@@ -227,8 +225,10 @@ export class TestnetExecutor implements Executor {
 
     const exchangePosition = await this.findExchangePosition(request.position.coin);
     if (exchangePosition && Math.abs(Number(exchangePosition.szi)) > 0) {
-      return { accepted: false, reason: 'TESTNET close filled but exchange still reports an open position', raw: closeResponse };
+      return { accepted: false, reason: 'TESTNET close filled but exchange still reports an open position; protective orders left resting', raw: closeResponse };
     }
+    await this.cancelOrder(symbol, request.position.stopOrderId);
+    await this.cancelOrder(symbol, request.position.targetOrderId);
 
     const closedTrade = closedTradeFromExit({
       position: request.position,
@@ -379,12 +379,12 @@ export class TestnetExecutor implements Executor {
     }
 
     return {
-      protected: protectedOnExchange || responseAccepted,
+      protected: protectedOnExchange,
       stopOid,
       targetOid,
       stopError,
       targetError,
-      failureReason: stopError ?? targetError ?? (!stopOid ? 'missing stop oid' : !targetOid ? 'missing target oid' : null),
+      failureReason: stopError ?? targetError ?? (!stopOid ? 'missing stop oid' : !targetOid ? 'missing target oid' : !protectedOnExchange && responseAccepted ? 'trigger orders accepted but not confirmed resting by API' : null),
       openOrders: openOrders.all,
     };
   }
@@ -572,7 +572,7 @@ function triggerText(order: FrontendOpenOrder): string {
   return `${order.orderType ?? ''} ${order.triggerCondition ?? ''}`.toLowerCase();
 }
 
-function protectiveOrdersForCoin(orders: FrontendOpenOrder[], coin: string, stop?: number, target?: number) {
+export function protectiveOrdersForCoin(orders: FrontendOpenOrder[], coin: string, stop?: number, target?: number) {
   const plain = plainCoin(coin);
   const protectiveOrders = orders.filter((order) => (
     plainCoin(order.coin) === plain &&

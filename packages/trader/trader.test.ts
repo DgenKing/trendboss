@@ -20,6 +20,7 @@ import {
   loadTestnetSecret,
   orderStatusError,
   plainCoin,
+  protectiveOrdersForCoin,
   totalAccountEquity,
 } from './testnet';
 
@@ -139,6 +140,39 @@ describe('TESTNET rounding helpers', () => {
     expect(orderStatusError(orderResponse('Reduce only order would increase position.'))).toBe('Reduce only order would increase position.');
     expect(orderStatusError(orderResponse('waitingForTrigger'))).toBeNull();
     expect(acceptedOrderId(orderResponse({ error: 'No position to reduce.' }))).toBeNull();
+  });
+
+  test('matches only API-confirmed resting protective trigger orders', () => {
+    const orders = protectiveOrdersForCoin([
+      {
+        coin: 'WLD-PERP',
+        oid: 55050419267,
+        isTrigger: true,
+        reduceOnly: true,
+        triggerPx: '0.60223',
+        orderType: 'Stop Market',
+      },
+      {
+        coin: 'WLD-PERP',
+        oid: 55050419268,
+        isTrigger: true,
+        reduceOnly: true,
+        triggerPx: '0.63577',
+        orderType: 'Take Profit Market',
+      },
+      {
+        coin: 'WLD-PERP',
+        oid: 1,
+        isTrigger: true,
+        reduceOnly: false,
+        triggerPx: '0.60223',
+        orderType: 'Stop Market',
+      },
+    ] as any, 'WLD', 0.60223, 0.63577);
+
+    expect(orders.stop?.oid).toBe(55050419267);
+    expect(orders.target?.oid).toBe(55050419268);
+    expect(protectiveOrdersForCoin([], 'WLD', 0.60223, 0.63577).stop).toBeUndefined();
   });
 });
 
