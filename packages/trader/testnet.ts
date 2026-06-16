@@ -61,6 +61,7 @@ export class TestnetExecutor implements Executor {
   readonly mode = 'TESTNET' as const;
   private meta: Meta | null = null;
   private readonly loggedRules = new Set<string>();
+  private readonly missingProtectionLogged = new Set<string>();
 
   private constructor(
     private readonly sdk: Hyperliquid,
@@ -270,6 +271,21 @@ export class TestnetExecutor implements Executor {
       const coin = plainCoin(exchangePosition.coin);
       const local = account.positions.get(coin) ?? store.getOpenPositions().find((position) => position.coin === coin);
       const protective = protectiveOrdersForCoin(openOrders, coin, local?.stop, local?.target);
+      if (!protective.stop || !protective.target) {
+        const key = `${coin}:${local?.entryTime ?? exchangePosition.entryPx}`;
+        if (!this.missingProtectionLogged.has(key)) {
+          this.missingProtectionLogged.add(key);
+          logger?.error(`TESTNET ${coin} open position is missing exchange stop/TP protection`, {
+            coin,
+            direction: Number(exchangePosition.szi) >= 0 ? 'LONG' : 'SHORT',
+            strategy: local?.strategy ?? 'RANGE_REVERSION',
+            price: numeric(exchangePosition.entryPx, 0),
+            stop: local?.stop ?? 0,
+            target: local?.target ?? 0,
+          });
+          console.error(`[trader] TESTNET ${coin} open position is missing exchange stop/TP protection`);
+        }
+      }
       const mirrored = mirrorExchangePosition({
         coin,
         exchangePosition,
@@ -628,8 +644,8 @@ function mirrorExchangePosition(params: {
     markPrice,
     liquidationPrice: numericOrNull(exchangePosition.liquidationPx),
     fees,
-    stopOrderId: oidText(protective.stop?.oid) ?? local?.stopOrderId ?? null,
-    targetOrderId: oidText(protective.target?.oid) ?? local?.targetOrderId ?? null,
+    stopOrderId: oidText(protective.stop?.oid) ?? null,
+    targetOrderId: oidText(protective.target?.oid) ?? null,
     tradeId: local?.tradeId ?? null,
     signalId: local?.signalId ?? null,
     positionId: local?.positionId ?? null,
