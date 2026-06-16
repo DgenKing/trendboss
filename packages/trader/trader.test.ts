@@ -279,11 +279,14 @@ describe('TraderStore live state persistence', () => {
       usedMargin: 20,
       activePositions: 2,
     });
+    const labeled = testLivePosition({ botName: 'hermes-trades' });
+    store.upsertPosition(labeled);
     const state = store.getLiveState();
     store.close();
     expect(state.equityPoints).toHaveLength(1);
     expect(state.equityPoints[0].equity).toBe(925);
     expect(state.equityPoints[0].activePositions).toBe(2);
+    expect(state.openPositions[0].botName).toBe('hermes-trades');
   });
 });
 

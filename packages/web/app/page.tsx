@@ -33,8 +33,8 @@ export default function Page() {
     () => health?.coins.flatMap((coin) => coin.position ? [coin.position] : []) ?? [],
     [health],
   );
-  const hermesPositions = useMemo(() => positions.filter((position) => position.margin <= 10.01), [positions]);
-  const legacyPositions = useMemo(() => positions.filter((position) => position.margin > 10.01), [positions]);
+  const hermesPositions = useMemo(() => positions.filter((position) => position.botName === 'hermes-trades'), [positions]);
+  const legacyPositions = useMemo(() => positions.filter((position) => position.botName !== 'hermes-trades'), [positions]);
   const closed = useMemo(() => events.filter((event) => event.type === 'CLOSE').reverse(), [events]);
   const visibleEvents = useMemo(
     () => events.filter((event) => event.type !== 'HEARTBEAT').reverse().slice(0, 80),

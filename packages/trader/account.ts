@@ -95,6 +95,7 @@ export function positionFromSignal(params: {
     fees: 0,
     stopOrderId,
     targetOrderId,
+    botName: config.trader.botName,
   };
   return { ...position, unrealizedPnl: markToMarket(position, currentPrice) };
 }

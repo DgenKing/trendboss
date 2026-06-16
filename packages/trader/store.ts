@@ -136,8 +136,8 @@ export class TraderStore {
         (coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
          score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
          unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId,
-         tradeId, signalId, positionId, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         tradeId, signalId, positionId, botName, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(coin) DO UPDATE SET
         mode = excluded.mode,
         direction = excluded.direction,
@@ -163,6 +163,7 @@ export class TraderStore {
         tradeId = excluded.tradeId,
         signalId = excluded.signalId,
         positionId = excluded.positionId,
+        botName = excluded.botName,
         updatedAt = excluded.updatedAt
     `).run(...positionParams(position), Date.now());
   }
@@ -177,9 +178,9 @@ export class TraderStore {
         (coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
          score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
          unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId,
-         tradeId, signalId, positionId, exitTime, exitPrice, exitReason,
+         tradeId, signalId, positionId, botName, exitTime, exitPrice, exitReason,
          pnl, returnOnMargin, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(...positionParams(trade), trade.exitTime, trade.exitPrice, trade.exitReason, trade.pnl, trade.returnOnMargin, Date.now());
   }
 
@@ -228,7 +229,7 @@ export class TraderStore {
       SELECT coin, mode, direction, strategy, regime, entryTime, entry, stop, target,
              score, margin, notional, allocationPct, riskAtStop, quantity, currentPrice,
              unrealizedPnl, markPrice, liquidationPrice, fees, stopOrderId, targetOrderId,
-             tradeId, signalId, positionId
+             tradeId, signalId, positionId, botName
       FROM live_positions
       ORDER BY entryTime ASC
     `).all() as LivePosition[];
@@ -334,6 +335,7 @@ export class TraderStore {
         tradeId TEXT,
         signalId TEXT,
         positionId TEXT,
+        botName TEXT,
         updatedAt INTEGER
       );
 
@@ -364,6 +366,7 @@ export class TraderStore {
         tradeId TEXT,
         signalId TEXT,
         positionId TEXT,
+        botName TEXT,
         exitTime INTEGER,
         exitPrice REAL,
         exitReason TEXT,
@@ -440,12 +443,14 @@ export class TraderStore {
     this.addColumn('live_positions', 'tradeId', 'TEXT');
     this.addColumn('live_positions', 'signalId', 'TEXT');
     this.addColumn('live_positions', 'positionId', 'TEXT');
+    this.addColumn('live_positions', 'botName', 'TEXT');
     this.addColumn('live_closed_trades', 'markPrice', 'REAL');
     this.addColumn('live_closed_trades', 'liquidationPrice', 'REAL');
     this.addColumn('live_closed_trades', 'fees', 'REAL DEFAULT 0');
     this.addColumn('live_closed_trades', 'tradeId', 'TEXT');
     this.addColumn('live_closed_trades', 'signalId', 'TEXT');
     this.addColumn('live_closed_trades', 'positionId', 'TEXT');
+    this.addColumn('live_closed_trades', 'botName', 'TEXT');
   }
 
   private addColumn(table: string, column: string, definition: string) {
@@ -494,5 +499,6 @@ function positionParams(position: LivePosition): SqlValue[] {
     position.tradeId ?? null,
     position.signalId ?? null,
     position.positionId ?? null,
+    position.botName ?? null,
   ];
 }

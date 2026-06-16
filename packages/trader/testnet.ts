@@ -649,6 +649,7 @@ function mirrorExchangePosition(params: {
     tradeId: local?.tradeId ?? null,
     signalId: local?.signalId ?? null,
     positionId: local?.positionId ?? null,
+    botName: local?.botName ?? null,
   };
 }
 

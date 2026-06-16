@@ -55,6 +55,7 @@ export interface LivePosition {
   tradeId?: string | null;
   signalId?: string | null;
   positionId?: string | null;
+  botName?: string | null;
 }
 
 export interface LiveClosedTrade extends LivePosition {
