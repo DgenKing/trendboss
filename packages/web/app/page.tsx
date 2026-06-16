@@ -46,8 +46,8 @@ export default function Page() {
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4 px-5 py-5">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-300">Hyperliquid TESTNET</p>
-            <h1 className="mt-1 text-2xl font-semibold">TrendBoss Live 5m</h1>
-            <p className="mt-1 text-sm text-white/50">Live TESTNET trader state and event log only</p>
+            <h1 className="mt-1 text-2xl font-semibold">Hermes Trades</h1>
+            <p className="mt-1 text-sm text-white/50">$10 max margin · one coin at a time · stop + TP required</p>
           </div>
           <div className="flex items-center gap-3">
             <StatusDot ok={Boolean(health?.ok) && !error} />
@@ -110,8 +110,8 @@ export default function Page() {
         </Panel>
 
         <section className="grid gap-5 xl:grid-cols-2">
-          <Panel title={`Open TESTNET Trades (${positions.length})`}>
-            {positions.length ? positions.map((position) => <PositionCard key={position.coin} position={position} />) : <Empty text="No open TESTNET positions" />}
+          <Panel title={`Hermes Trades (${positions.length ? positions.length : 'None'})`}>
+            {positions.length ? positions.map((position) => <PositionCard key={position.coin} position={position} />) : <Empty text="Hermes Trades: None" />}
           </Panel>
           <Panel title={`Closed TESTNET Trades (${closed.length})`}>
             <div className="space-y-2">

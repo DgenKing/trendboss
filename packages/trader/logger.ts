@@ -67,7 +67,6 @@ type EventInput = {
 };
 
 const LOG_DIR = 'logs';
-const BOT_NAME = 'trendboss-live-trader';
 const TIMEFRAME = '5m';
 
 export class TraderLogger {
@@ -345,8 +344,8 @@ export class TraderLogger {
       error: input.error ?? null,
       pnl: input.pnl ?? null,
       fees: input.fees ?? null,
-      source: BOT_NAME,
-      bot_name: BOT_NAME,
+      source: config.trader.botName,
+      bot_name: config.trader.botName,
       signalId: input.signalId ?? null,
       orderId: input.orderId ?? null,
       exchangeOrderId: input.exchangeOrderId ?? null,

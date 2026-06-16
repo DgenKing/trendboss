@@ -8,7 +8,7 @@ import { TraderAccount, updatePositionMark } from './account';
 import { createHeartbeatPublisher, main } from './index';
 import { entryIndicators, TraderLogger } from './logger';
 import { PaperExecutor } from './paper';
-import { calculateLiveAllocation, liveAllocationCalculator } from './sizing';
+import { calculateLiveAllocation, capLiveAllocationMargin } from './sizing';
 import { TraderStore } from './store';
 import type { LiveDecision, LivePosition } from './types';
 import {
@@ -41,8 +41,7 @@ describe('trader config safety', () => {
 });
 
 describe('live sizing', () => {
-  test('delegates to the portfolio allocation function', () => {
-    expect(liveAllocationCalculator).toBe(calculatePortfolioAllocation);
+  test('delegates to the portfolio allocation function then caps TESTNET margin to 10 dollars', () => {
     const params = {
       equity: 1_000,
       usedMargin: 0,
@@ -50,7 +49,7 @@ describe('live sizing', () => {
       stop: 90,
       direction: 'LONG' as const,
     };
-    expect(calculateLiveAllocation(params)).toEqual(calculatePortfolioAllocation({
+    const raw = calculatePortfolioAllocation({
       ...params,
       leverage: config.portfolio.leverage,
       riskPerTrade: config.portfolio.riskPerTrade,
@@ -58,7 +57,14 @@ describe('live sizing', () => {
       maxTotalMargin: config.portfolio.maxTotalMargin,
       feePerSide: config.backtest.feePerSide,
       slippagePerSide: config.backtest.slippagePerSide,
-    }));
+    });
+    expect(raw.margin).toBeGreaterThan(10);
+    expect(calculateLiveAllocation(params)).toEqual(capLiveAllocationMargin(raw, config.trader.maxTradeMarginUsd, params.equity));
+    expect(calculateLiveAllocation(params).margin).toBe(10);
+  });
+
+  test('defaults TESTNET trader to one open position', () => {
+    expect(config.trader.maxOpenPositions).toBe(1);
   });
 });
 
@@ -367,8 +373,8 @@ describe('TraderLogger', () => {
       expect(line).toHaveProperty('error');
       expect(line).toHaveProperty('pnl');
       expect(line).toHaveProperty('fees');
-      expect(line.source).toBe('trendboss-live-trader');
-      expect(line.bot_name).toBe('trendboss-live-trader');
+      expect(line.source).toBe(config.trader.botName);
+      expect(line.bot_name).toBe(config.trader.botName);
     }
     expect(lines[0]).toMatchObject({
       event: 'OPEN',
