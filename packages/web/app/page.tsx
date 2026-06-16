@@ -33,6 +33,8 @@ export default function Page() {
     () => health?.coins.flatMap((coin) => coin.position ? [coin.position] : []) ?? [],
     [health],
   );
+  const hermesPositions = useMemo(() => positions.filter((position) => position.margin <= 10.01), [positions]);
+  const legacyPositions = useMemo(() => positions.filter((position) => position.margin > 10.01), [positions]);
   const closed = useMemo(() => events.filter((event) => event.type === 'CLOSE').reverse(), [events]);
   const visibleEvents = useMemo(
     () => events.filter((event) => event.type !== 'HEARTBEAT').reverse().slice(0, 80),
@@ -110,8 +112,11 @@ export default function Page() {
         </Panel>
 
         <section className="grid gap-5 xl:grid-cols-2">
-          <Panel title={`Hermes Trades (${positions.length ? positions.length : 'None'})`}>
-            {positions.length ? positions.map((position) => <PositionCard key={position.coin} position={position} />) : <Empty text="Hermes Trades: None" />}
+          <Panel title={`Hermes Trades (${hermesPositions.length ? hermesPositions.length : 'None'})`}>
+            {hermesPositions.length ? hermesPositions.map((position) => <PositionCard key={position.coin} position={position} />) : <Empty text="Hermes Trades: None" />}
+          </Panel>
+          <Panel title={`TrendBoss / Legacy Trades (${legacyPositions.length ? legacyPositions.length : 'None'})`}>
+            {legacyPositions.length ? legacyPositions.map((position) => <PositionCard key={position.coin} position={position} />) : <Empty text="No legacy TrendBoss positions" />}
           </Panel>
           <Panel title={`Closed TESTNET Trades (${closed.length})`}>
             <div className="space-y-2">
