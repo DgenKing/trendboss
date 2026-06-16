@@ -20,6 +20,58 @@ import type {
 } from './types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HEARTBEAT_RECONCILE_TIMEOUT_MS = 45_000;
+
+export type HeartbeatPublisher = {
+  publish(): Promise<void>;
+};
+
+export type HeartbeatPublisherParams<Heartbeat, Health> = {
+  reconcile?: () => Promise<void>;
+  timeoutMs?: number;
+  buildHeartbeat: () => Heartbeat;
+  saveHeartbeat: (heartbeat: Heartbeat) => void;
+  buildHealth: (heartbeat: Heartbeat) => Health;
+  writeHealth: (health: Health) => void;
+  logHealth: (health: Health) => void;
+  logHeartbeat: (heartbeat: Heartbeat) => void;
+  clearLastError: () => void;
+  recordError: (message: string) => void;
+};
+
+export function createHeartbeatPublisher<Heartbeat, Health>(
+  params: HeartbeatPublisherParams<Heartbeat, Health>,
+): HeartbeatPublisher {
+  let heartbeatRunning = false;
+  const timeoutMs = params.timeoutMs ?? HEARTBEAT_RECONCILE_TIMEOUT_MS;
+
+  const publishSnapshot = (heartbeat: Heartbeat) => {
+    params.saveHeartbeat(heartbeat);
+    const health = params.buildHealth(heartbeat);
+    params.writeHealth(health);
+    params.logHealth(health);
+    params.logHeartbeat(heartbeat);
+  };
+
+  return {
+    async publish() {
+      if (heartbeatRunning) return;
+      heartbeatRunning = true;
+      try {
+        if (params.reconcile) {
+          await withTimeout(params.reconcile(), timeoutMs, 'heartbeat reconcile');
+        }
+        params.clearLastError();
+        publishSnapshot(params.buildHeartbeat());
+      } catch (error) {
+        params.recordError(`reconcile: ${errorMessage(error)}`);
+        publishSnapshot(params.buildHeartbeat());
+      } finally {
+        heartbeatRunning = false;
+      }
+    },
+  };
+}
 
 export class LiveTrader {
   private readonly engines = new Map<string, RegimeAwareStrategyEngine>();
@@ -379,49 +431,29 @@ export async function main() {
   scheduleUtcRolloverLog();
   feed.start();
   console.log(`[trader] ${config.trader.mode} loop running on 5m for ${config.trader.coins.join(', ')}`);
-  let heartbeatRunning = false;
-  const publishHeartbeat = async () => {
-    if (heartbeatRunning) return;
-    heartbeatRunning = true;
-    try {
-      if (executor instanceof TestnetExecutor) {
-        await executor.reconcileLiveState(account, store, logger);
-      }
-      trader.clearLastError();
-      const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
-      store.saveHeartbeat(heartbeat);
-      const health = buildHealthPayload({
-        heartbeat,
-        positions: [...account.positions.values()],
-        equity: account.equity(),
-        usedMargin: account.usedMargin(),
-        lastError: trader.lastErrorText(),
-      });
-      writeHealthSnapshot(health);
-      logger.heartbeat(health);
-      logHeartbeat(heartbeat);
-    } catch (error) {
-      trader.recordExternalError(`reconcile: ${errorMessage(error)}`);
-      const heartbeat = enrichedHeartbeat(feed.health(), trader, account);
-      store.saveHeartbeat(heartbeat);
-      const health = buildHealthPayload({
-        heartbeat,
-        positions: [...account.positions.values()],
-        equity: account.equity(),
-        usedMargin: account.usedMargin(),
-        lastError: trader.lastErrorText(),
-      });
-      writeHealthSnapshot(health);
-      logger.heartbeat(health);
-      logHeartbeat(heartbeat);
-    } finally {
-      heartbeatRunning = false;
-    }
-  };
+  const heartbeatPublisher = createHeartbeatPublisher({
+    reconcile: executor instanceof TestnetExecutor
+      ? () => executor.reconcileLiveState(account, store, logger)
+      : undefined,
+    buildHeartbeat: () => enrichedHeartbeat(feed.health(), trader, account),
+    saveHeartbeat: (heartbeat) => store.saveHeartbeat(heartbeat),
+    buildHealth: (heartbeat) => buildHealthPayload({
+      heartbeat,
+      positions: [...account.positions.values()],
+      equity: account.equity(),
+      usedMargin: account.usedMargin(),
+      lastError: trader.lastErrorText(),
+    }),
+    writeHealth: (health) => writeHealthSnapshot(health),
+    logHealth: (health) => logger.heartbeat(health),
+    logHeartbeat,
+    clearLastError: () => trader.clearLastError(),
+    recordError: (message) => trader.recordExternalError(message),
+  });
   const heartbeatTimer = setInterval(() => {
-    void publishHeartbeat();
+    void heartbeatPublisher.publish();
   }, config.trader.heartbeatSeconds * 1000);
-  await publishHeartbeat();
+  await heartbeatPublisher.publish();
 
   const shutdown = () => {
     clearInterval(heartbeatTimer);
@@ -563,6 +595,20 @@ function latestCompletedUtcDay() {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 if (import.meta.main) {

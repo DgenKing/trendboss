@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-curl -fsS http://localhost:8787/health
+/usr/bin/curl -fsS http://localhost:8787/health
 printf '\n'

@@ -5,10 +5,10 @@ import { calculatePortfolioAllocation } from '../core/portfolio';
 import type { StrategyExit, StrategySignal } from '../core/strategy';
 import type { Candle } from '../core/types';
 import { TraderAccount, updatePositionMark } from './account';
-import { main } from './index';
+import { createHeartbeatPublisher, main } from './index';
 import { entryIndicators, TraderLogger } from './logger';
 import { PaperExecutor } from './paper';
-import { calculateLiveAllocation, liveAllocationCalculator } from './sizing';
+import { calculateLiveAllocation, capLiveAllocationMargin } from './sizing';
 import { TraderStore } from './store';
 import type { LiveDecision, LivePosition } from './types';
 import {
@@ -20,6 +20,7 @@ import {
   loadTestnetSecret,
   orderStatusError,
   plainCoin,
+  protectiveOrdersForCoin,
   totalAccountEquity,
 } from './testnet';
 
@@ -40,8 +41,7 @@ describe('trader config safety', () => {
 });
 
 describe('live sizing', () => {
-  test('delegates to the portfolio allocation function', () => {
-    expect(liveAllocationCalculator).toBe(calculatePortfolioAllocation);
+  test('delegates to the portfolio allocation function then caps TESTNET margin to 10 dollars', () => {
     const params = {
       equity: 1_000,
       usedMargin: 0,
@@ -49,7 +49,7 @@ describe('live sizing', () => {
       stop: 90,
       direction: 'LONG' as const,
     };
-    expect(calculateLiveAllocation(params)).toEqual(calculatePortfolioAllocation({
+    const raw = calculatePortfolioAllocation({
       ...params,
       leverage: config.portfolio.leverage,
       riskPerTrade: config.portfolio.riskPerTrade,
@@ -57,7 +57,38 @@ describe('live sizing', () => {
       maxTotalMargin: config.portfolio.maxTotalMargin,
       feePerSide: config.backtest.feePerSide,
       slippagePerSide: config.backtest.slippagePerSide,
-    }));
+    });
+    expect(raw.margin).toBeGreaterThan(10);
+    expect(calculateLiveAllocation(params)).toEqual(capLiveAllocationMargin(raw, config.trader.maxTradeMarginUsd, params.equity));
+    expect(calculateLiveAllocation(params).margin).toBe(10);
+  });
+
+  test('defaults TESTNET trader to one open position', () => {
+    expect(config.trader.maxOpenPositions).toBe(1);
+  });
+});
+
+describe('live heartbeat publisher', () => {
+  test('times out a hung reconcile and allows the next heartbeat to publish', async () => {
+    const writes: string[] = [];
+    const publisher = createHeartbeatPublisher({
+      reconcile: () => new Promise<void>(() => {}),
+      timeoutMs: 5,
+      buildHeartbeat: () => minimalHeartbeat(),
+      saveHeartbeat: () => writes.push('heartbeat'),
+      buildHealth: () => ({ ok: true }),
+      writeHealth: () => writes.push('health'),
+      logHealth: () => writes.push('log'),
+      logHeartbeat: () => writes.push('print'),
+      clearLastError: () => writes.push('clear'),
+      recordError: (message) => writes.push(`error:${message}`),
+    });
+
+    await publisher.publish();
+    await publisher.publish();
+
+    expect(writes.filter((item) => item === 'heartbeat')).toHaveLength(2);
+    expect(writes.some((item) => item.includes('timed out'))).toBe(true);
   });
 });
 
@@ -116,6 +147,39 @@ describe('TESTNET rounding helpers', () => {
     expect(orderStatusError(orderResponse('waitingForTrigger'))).toBeNull();
     expect(acceptedOrderId(orderResponse({ error: 'No position to reduce.' }))).toBeNull();
   });
+
+  test('matches only API-confirmed resting protective trigger orders', () => {
+    const orders = protectiveOrdersForCoin([
+      {
+        coin: 'WLD-PERP',
+        oid: 55050419267,
+        isTrigger: true,
+        reduceOnly: true,
+        triggerPx: '0.60223',
+        orderType: 'Stop Market',
+      },
+      {
+        coin: 'WLD-PERP',
+        oid: 55050419268,
+        isTrigger: true,
+        reduceOnly: true,
+        triggerPx: '0.63577',
+        orderType: 'Take Profit Market',
+      },
+      {
+        coin: 'WLD-PERP',
+        oid: 1,
+        isTrigger: true,
+        reduceOnly: false,
+        triggerPx: '0.60223',
+        orderType: 'Stop Market',
+      },
+    ] as any, 'WLD', 0.60223, 0.63577);
+
+    expect(orders.stop?.oid).toBe(55050419267);
+    expect(orders.target?.oid).toBe(55050419268);
+    expect(protectiveOrdersForCoin([], 'WLD', 0.60223, 0.63577).stop).toBeUndefined();
+  });
 });
 
 describe('TESTNET reconciliation helpers', () => {
@@ -146,6 +210,19 @@ describe('TESTNET reconciliation helpers', () => {
       } as any,
       { balances: [{ coin: 'USDC', total: '885.247089', hold: '249.057609' }] },
     )).toBe(885.247089);
+  });
+
+  test('tolerates small TESTNET spot hold drift when detecting isolated margin accountValue', () => {
+    expect(totalAccountEquity(
+      {
+        marginSummary: {
+          accountValue: '124.369509',
+          totalMarginUsed: '124.369509',
+          totalRawUsd: '-469.691619',
+        },
+      } as any,
+      { balances: [{ coin: 'USDC', total: '877.264258', hold: '124.340424' }] },
+    )).toBe(877.264258);
   });
 
   test('does not replace exchange TESTNET mark and PnL with local feed prices', () => {
@@ -202,11 +279,14 @@ describe('TraderStore live state persistence', () => {
       usedMargin: 20,
       activePositions: 2,
     });
+    const labeled = testLivePosition({ botName: 'hermes-trades' });
+    store.upsertPosition(labeled);
     const state = store.getLiveState();
     store.close();
     expect(state.equityPoints).toHaveLength(1);
     expect(state.equityPoints[0].equity).toBe(925);
     expect(state.equityPoints[0].activePositions).toBe(2);
+    expect(state.openPositions[0].botName).toBe('hermes-trades');
   });
 });
 
@@ -296,8 +376,8 @@ describe('TraderLogger', () => {
       expect(line).toHaveProperty('error');
       expect(line).toHaveProperty('pnl');
       expect(line).toHaveProperty('fees');
-      expect(line.source).toBe('trendboss-live-trader');
-      expect(line.bot_name).toBe('trendboss-live-trader');
+      expect(line.source).toBe(config.trader.botName);
+      expect(line.bot_name).toBe(config.trader.botName);
     }
     expect(lines[0]).toMatchObject({
       event: 'OPEN',
@@ -407,6 +487,28 @@ function testCandle(index: number, open: number, high: number, low: number, clos
     low,
     close,
     volume: 100,
+  };
+}
+
+function minimalHeartbeat() {
+  return {
+    time: Date.now(),
+    startedAt: Date.now() - 1_000,
+    uptimeSeconds: 1,
+    socketHealthy: true,
+    secondsSinceLastMessage: 1,
+    closedCandlesByInterval: {},
+    lastClosedCandleByCoin: {},
+    signalsSeen: 0,
+    openPositions: 0,
+    lastAction: 'none',
+    lastError: null,
+    feedPath: 'WS' as const,
+    rawChannels: {},
+    lastRawChannel: null,
+    currentPriceByCoin: {},
+    lastSignalByCoin: {},
+    lastOrderAttemptByCoin: {},
   };
 }
 

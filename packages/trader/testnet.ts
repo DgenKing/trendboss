@@ -61,6 +61,7 @@ export class TestnetExecutor implements Executor {
   readonly mode = 'TESTNET' as const;
   private meta: Meta | null = null;
   private readonly loggedRules = new Set<string>();
+  private readonly missingProtectionLogged = new Set<string>();
 
   private constructor(
     private readonly sdk: Hyperliquid,
@@ -208,8 +209,6 @@ export class TestnetExecutor implements Executor {
 
   async closePosition(request: CloseOrderRequest): Promise<CloseOrderResult> {
     const symbol = toPerpSymbol(request.position.coin);
-    await this.cancelOrder(symbol, request.position.stopOrderId);
-    await this.cancelOrder(symbol, request.position.targetOrderId);
 
     const isBuy = request.position.direction === 'SHORT';
     const closeResponse = await this.sdk.exchange.placeOrder({
@@ -227,8 +226,10 @@ export class TestnetExecutor implements Executor {
 
     const exchangePosition = await this.findExchangePosition(request.position.coin);
     if (exchangePosition && Math.abs(Number(exchangePosition.szi)) > 0) {
-      return { accepted: false, reason: 'TESTNET close filled but exchange still reports an open position', raw: closeResponse };
+      return { accepted: false, reason: 'TESTNET close filled but exchange still reports an open position; protective orders left resting', raw: closeResponse };
     }
+    await this.cancelOrder(symbol, request.position.stopOrderId);
+    await this.cancelOrder(symbol, request.position.targetOrderId);
 
     const closedTrade = closedTradeFromExit({
       position: request.position,
@@ -270,6 +271,21 @@ export class TestnetExecutor implements Executor {
       const coin = plainCoin(exchangePosition.coin);
       const local = account.positions.get(coin) ?? store.getOpenPositions().find((position) => position.coin === coin);
       const protective = protectiveOrdersForCoin(openOrders, coin, local?.stop, local?.target);
+      if (!protective.stop || !protective.target) {
+        const key = `${coin}:${local?.entryTime ?? exchangePosition.entryPx}`;
+        if (!this.missingProtectionLogged.has(key)) {
+          this.missingProtectionLogged.add(key);
+          logger?.error(`TESTNET ${coin} open position is missing exchange stop/TP protection`, {
+            coin,
+            direction: Number(exchangePosition.szi) >= 0 ? 'LONG' : 'SHORT',
+            strategy: local?.strategy ?? 'RANGE_REVERSION',
+            price: numeric(exchangePosition.entryPx, 0),
+            stop: local?.stop ?? 0,
+            target: local?.target ?? 0,
+          });
+          console.error(`[trader] TESTNET ${coin} open position is missing exchange stop/TP protection`);
+        }
+      }
       const mirrored = mirrorExchangePosition({
         coin,
         exchangePosition,
@@ -379,12 +395,12 @@ export class TestnetExecutor implements Executor {
     }
 
     return {
-      protected: protectedOnExchange || responseAccepted,
+      protected: protectedOnExchange,
       stopOid,
       targetOid,
       stopError,
       targetError,
-      failureReason: stopError ?? targetError ?? (!stopOid ? 'missing stop oid' : !targetOid ? 'missing target oid' : null),
+      failureReason: stopError ?? targetError ?? (!stopOid ? 'missing stop oid' : !targetOid ? 'missing target oid' : !protectedOnExchange && responseAccepted ? 'trigger orders accepted but not confirmed resting by API' : null),
       openOrders: openOrders.all,
     };
   }
@@ -572,7 +588,7 @@ function triggerText(order: FrontendOpenOrder): string {
   return `${order.orderType ?? ''} ${order.triggerCondition ?? ''}`.toLowerCase();
 }
 
-function protectiveOrdersForCoin(orders: FrontendOpenOrder[], coin: string, stop?: number, target?: number) {
+export function protectiveOrdersForCoin(orders: FrontendOpenOrder[], coin: string, stop?: number, target?: number) {
   const plain = plainCoin(coin);
   const protectiveOrders = orders.filter((order) => (
     plainCoin(order.coin) === plain &&
@@ -628,11 +644,12 @@ function mirrorExchangePosition(params: {
     markPrice,
     liquidationPrice: numericOrNull(exchangePosition.liquidationPx),
     fees,
-    stopOrderId: oidText(protective.stop?.oid) ?? local?.stopOrderId ?? null,
-    targetOrderId: oidText(protective.target?.oid) ?? local?.targetOrderId ?? null,
+    stopOrderId: oidText(protective.stop?.oid) ?? null,
+    targetOrderId: oidText(protective.target?.oid) ?? null,
     tradeId: local?.tradeId ?? null,
     signalId: local?.signalId ?? null,
     positionId: local?.positionId ?? null,
+    botName: local?.botName ?? null,
   };
 }
 
@@ -729,7 +746,7 @@ export function totalAccountEquity(state: ClearinghouseState, spotState: unknown
     usedMargin !== null &&
     spotUsdc > perpsValue &&
     nearlyEqual(perpsValue, usedMargin) &&
-    (spotHold === null || nearlyEqual(spotHold, usedMargin))
+    (spotHold === null || nearlyEqual(spotHold, usedMargin, Math.max(1, usedMargin * 0.005)))
   ) {
     return spotUsdc;
   }

@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/user/projects/trendboss
+WorkingDirectory=/home/btcai/trendboss-testnet
 Environment=APP_MODE=TESTNET HYPERLIQUID_ENV=TESTNET TRADE_INTERVAL=5m TRADER_MODE=TESTNET TRADER_ENABLED=true COINS=BTC,ETH,SOL,BNB,HYPE,NEAR,WLD,TON,SUI,DOGE TRADER_DB_PATH=data/testnet.db DB_PATH=data/monitor.db
 ExecStart=/usr/bin/env bun run web
 Restart=always

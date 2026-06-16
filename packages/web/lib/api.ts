@@ -12,6 +12,7 @@ export type LivePosition = {
   currentPrice: number;
   unrealizedPnl: number;
   fees?: number;
+  botName?: string | null;
 };
 
 export type SignalSummary = {

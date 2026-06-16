@@ -11,7 +11,7 @@ export function calculateLiveAllocation(params: {
   stop: number;
   direction: Direction;
 }): PortfolioAllocation {
-  return liveAllocationCalculator({
+  const allocation = liveAllocationCalculator({
     equity: params.equity,
     usedMargin: params.usedMargin,
     entry: params.entry,
@@ -24,4 +24,22 @@ export function calculateLiveAllocation(params: {
     feePerSide: config.backtest.feePerSide,
     slippagePerSide: config.backtest.slippagePerSide,
   });
+  return capLiveAllocationMargin(allocation, config.trader.maxTradeMarginUsd, params.equity);
+}
+
+export function capLiveAllocationMargin(
+  allocation: PortfolioAllocation,
+  maxMarginUsd: number,
+  equity: number,
+): PortfolioAllocation {
+  if (allocation.status === 'REJECTED' || allocation.margin <= maxMarginUsd) return allocation;
+  const scale = maxMarginUsd / allocation.margin;
+  return {
+    ...allocation,
+    margin: maxMarginUsd,
+    notional: allocation.notional * scale,
+    allocationPct: equity > 0 ? maxMarginUsd / equity : 0,
+    riskAtStop: allocation.riskAtStop * scale,
+    status: 'PARTIAL',
+  };
 }
