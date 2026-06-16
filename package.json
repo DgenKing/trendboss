@@ -12,7 +12,7 @@
     "api": "bun run packages/monitor/index.ts",
     "trader": "bun run packages/trader/index.ts",
     "test": "bun test packages/core/core.test.ts packages/trader/trader.test.ts",
-    "check": "bun test packages/core/core.test.ts packages/trader/trader.test.ts && bunx tsc --noEmit"
+    "check": "bun test packages/core/core.test.ts packages/trader/trader.test.ts && bun x tsc --noEmit"
   },
   "workspaces": [
     "packages/web"
